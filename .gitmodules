@@ -1,0 +1,3 @@
+[submodule "MERC-main"]
+	path = MERC-main
+	url = https://github.com/wykstc/MERC-main.git
