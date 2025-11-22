@@ -55,6 +55,10 @@ class Coach:
         self.best_dev_f1 = None
         self.best_epoch = None
         self.best_state = None
+        
+        # 可视化相关
+        self.enable_visualization = getattr(args, 'enable_visualization', False)
+        self.visualization_dir = getattr(args, 'visualization_dir', './visualizations')
 
     def load_ckpt(self, ckpt):
         print('')
@@ -114,6 +118,16 @@ class Coach:
             dev_f1s.append(dev_f1)
             test_f1s.append(test_f1)
             train_losses.append(train_loss)
+        
+        # 训练结束后进行可视化
+        if self.enable_visualization and not self.args.tuning:
+            try:
+                from .visualization import JOYFULVisualizer
+                visualizer = JOYFULVisualizer(self.args, save_dir=self.visualization_dir)
+                visualizer.visualize_training_curves(train_losses, dev_f1s, test_f1s)
+                log.info("训练曲线可视化完成")
+            except Exception as e:
+                log.warning(f"可视化失败: {e}")
         if self.args.tuning:
             self.args.experiment.log_metric("best_dev_f1", best_dev_f1, epoch=epoch)
             self.args.experiment.log_metric("best_test_f1", best_test_f1, epoch=epoch)
@@ -189,6 +203,16 @@ class Coach:
                         golds, preds, target_names=self.label_to_idx.keys(), digits=4
                     )
                 )
+                
+                # 测试时进行混淆矩阵可视化
+                if self.enable_visualization:
+                    try:
+                        from .visualization import JOYFULVisualizer
+                        visualizer = JOYFULVisualizer(self.args, save_dir=self.visualization_dir)
+                        visualizer.visualize_confusion_matrix(golds, preds)
+                        log.info("混淆矩阵可视化完成")
+                    except Exception as e:
+                        log.warning(f"混淆矩阵可视化失败: {e}")
 
                 if self.args.dataset == "mosei" and self.args.emotion == "multilabel":
                     happy = metrics.f1_score(
