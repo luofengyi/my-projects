@@ -7,6 +7,7 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
+from joyful.loss_utils import create_reconstruction_loss
 
 
 class UtteranceLevelGate(nn.Module):
@@ -178,6 +179,7 @@ class AutoFusion_Hierarchical(nn.Module):
     def __init__(self, input_features, use_smooth_l1: bool = False):
         super(AutoFusion_Hierarchical, self).__init__()
         self.input_features = input_features
+        self.use_smooth_l1 = use_smooth_l1
 
         # 改进：内层话语级门控（替换原来的fuse_inGlobal）
         self.utterance_gate = UtteranceLevelGate(input_features, 512)
