@@ -175,7 +175,7 @@ class AutoFusion_Hierarchical(nn.Module):
     改进的AutoFusion - 集成层次化动态门控机制
     只在上下文融合部分进行修改，保持其他部分不变
     """
-    def __init__(self, input_features):
+    def __init__(self, input_features, use_smooth_l1: bool = False):
         super(AutoFusion_Hierarchical, self).__init__()
         self.input_features = input_features
 
@@ -203,7 +203,8 @@ class AutoFusion_Hierarchical(nn.Module):
             nn.Linear(1024, input_features)
         )
 
-        self.criterion = nn.MSELoss()
+        # allow switching to SmoothL1Loss for reconstruction when requested
+        self.criterion = nn.SmoothL1Loss() if use_smooth_l1 else nn.MSELoss()
 
         # 局部特征学习的投影层（保持不变）
         self.projectA = nn.Linear(100, 460)

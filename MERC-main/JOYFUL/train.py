@@ -75,8 +75,9 @@ def main(args):
     data = joyful.utils.load_pkl(args.data)
     log.info("Loaded data.")
 
-    # 计算input_features
-    input_features = args.dataset_embedding_dims[args.dataset][args.modalities]
+    # 计算input_features: use raw concatenated modality sizes for the fusion module
+    # keep args.dataset_embedding_dims as the final fused embedding size used later
+    input_features = args.dataset_raw_dims[args.dataset][args.modalities]
     
     # 检查是否使用层次化融合
     use_hierarchical = getattr(args, 'use_hierarchical_fusion', False)
@@ -318,6 +319,46 @@ if __name__ == "__main__":
             "tv": 768 + 512,
             "av": 612,
             "atv": 768,
+        },
+    }
+    # 添加损失函数出现了维度问题所以进行了如下修改
+    # raw per-modality (concatenated) dimensions used as input to fusion modules
+    args.dataset_raw_dims = {
+        "iemocap": {
+            "a": 100,
+            "t": 768,
+            "v": 512,
+            "at": 100 + 768,
+            "tv": 768 + 512,
+            "av": 100 + 512,
+            "atv": 100 + 768 + 512,
+        },
+        "iemocap_4": {
+            "a": 100,
+            "t": 768,
+            "v": 512,
+            "at": 100 + 768,
+            "tv": 768 + 512,
+            "av": 100 + 512,
+            "atv": 100 + 768 + 512,
+        },
+        "mosei": {
+            "a": 80,
+            "t": 768,
+            "v": 35,
+            "at": 80 + 768,
+            "tv": 768 + 35,
+            "av": 80 + 35,
+            "atv": 80 + 768 + 35,
+        },
+        "meld": {
+            "a": 100,
+            "t": 768,
+            "v": 512,
+            "at": 100 + 768,
+            "tv": 768 + 512,
+            "av": 100 + 512,
+            "atv": 100 + 768 + 512,
         },
     }
     main(args)
