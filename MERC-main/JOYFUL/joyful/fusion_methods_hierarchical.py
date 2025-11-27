@@ -7,6 +7,7 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
+from joyful.loss_utils import create_reconstruction_loss
 
 
 class UtteranceLevelGate(nn.Module):
@@ -175,9 +176,15 @@ class AutoFusion_Hierarchical(nn.Module):
     改进的AutoFusion - 集成层次化动态门控机制
     只在上下文融合部分进行修改，保持其他部分不变
     """
-    def __init__(self, input_features):
+    def __init__(self, input_features, use_smooth_l1=False):
+        """
+        Args:
+            input_features: 输入特征维度
+            use_smooth_l1: 是否使用SmoothL1Loss（基础优化方案），默认False使用MSELoss
+        """
         super(AutoFusion_Hierarchical, self).__init__()
         self.input_features = input_features
+        self.use_smooth_l1 = use_smooth_l1
 
         # 改进：内层话语级门控（替换原来的fuse_inGlobal）
         self.utterance_gate = UtteranceLevelGate(input_features, 512)
@@ -203,7 +210,12 @@ class AutoFusion_Hierarchical(nn.Module):
             nn.Linear(1024, input_features)
         )
 
-        self.criterion = nn.MSELoss()
+        # 使用基础优化方案创建重构损失
+        # 支持SmoothL1Loss（更鲁棒）或MSELoss（原始）
+        self.criterion = create_reconstruction_loss(
+            use_smooth_l1=use_smooth_l1,
+            reduction='mean'
+        )
 
         # 局部特征学习的投影层（保持不变）
         self.projectA = nn.Linear(100, 460)

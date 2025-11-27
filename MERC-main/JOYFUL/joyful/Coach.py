@@ -59,6 +59,16 @@ class Coach:
         
         # 使用基础优化方案的损失权重配置
         self.loss_weight_config = LossWeightConfig.from_args(args)
+        
+        # 训练过程记录（用于可视化）
+        self.training_history = {
+            'epochs': [],
+            'train_losses': [],
+            'train_f1s': [],
+            'dev_f1s': [],
+            'test_f1s': [],
+            'class_f1s': {}  # 每个类别的F1分数
+        }
 
     def load_ckpt(self, ckpt):
         print('')
@@ -79,13 +89,27 @@ class Coach:
 
         # Train
         for epoch in range(1, self.args.epochs + 1):
-            train_loss = self.train_epoch(epoch)
-            dev_f1, dev_loss = self.evaluate()
+            train_loss, train_f1 = self.train_epoch(epoch)
+            dev_f1, dev_loss, dev_class_f1s = self.evaluate()
             self.scheduler.step(dev_loss)
-            test_f1, _ = self.evaluate(test=True)
+            test_f1, test_loss, test_class_f1s = self.evaluate(test=True)
             if self.args.dataset == "mosei" and self.args.emotion == "multilabel":
                 test_f1 = np.array(list(test_f1.values())).mean()
             log.info("[Dev set] [f1 {:.4f}]".format(dev_f1))
+
+            # 记录训练历史
+            self.training_history['epochs'].append(epoch)
+            self.training_history['train_losses'].append(train_loss)
+            self.training_history['train_f1s'].append(train_f1)
+            self.training_history['dev_f1s'].append(dev_f1)
+            self.training_history['test_f1s'].append(test_f1 if isinstance(test_f1, (int, float)) else np.array(list(test_f1.values())).mean() if isinstance(test_f1, dict) else test_f1))
+            
+            # 记录各类别F1分数（如果是IEMOCAP_4）
+            if self.args.dataset in ["iemocap_4", "iemocap"] and isinstance(test_class_f1s, dict):
+                for class_name, f1_score in test_class_f1s.items():
+                    if class_name not in self.training_history['class_f1s']:
+                        self.training_history['class_f1s'][class_name] = []
+                    self.training_history['class_f1s'][class_name].append(f1_score)
 
             if best_dev_f1 is None or dev_f1 > best_dev_f1:
                 best_dev_f1 = dev_f1
@@ -118,12 +142,15 @@ class Coach:
             dev_f1s.append(dev_f1)
             test_f1s.append(test_f1)
             train_losses.append(train_loss)
+        
+        # 保存训练历史（用于可视化）
+        self.save_training_history()
+        
         if self.args.tuning:
             self.args.experiment.log_metric("best_dev_f1", best_dev_f1, epoch=epoch)
             self.args.experiment.log_metric("best_test_f1", best_test_f1, epoch=epoch)
 
             return best_dev_f1, best_epoch, best_state, train_losses, dev_f1s, test_f1s
-
 
         return best_dev_f1, best_epoch, best_state, train_losses, dev_f1s, test_f1s
 
@@ -152,13 +179,79 @@ class Coach:
             nll.backward()
             self.opt1.step()
 
+        # 计算训练集F1分数
+        train_f1 = self.evaluate_train_set()
+        
         end_time = time.time()
         log.info("")
         log.info(
-            "[Epoch %d] [Loss: %f] [Time: %f]"
-            % (epoch, epoch_loss, end_time - start_time)
+            "[Epoch %d] [Loss: %f] [Train F1: %f] [Time: %f]"
+            % (epoch, epoch_loss, train_f1, end_time - start_time)
         )
-        return epoch_loss
+        return epoch_loss, train_f1
+    
+    def evaluate_train_set(self):
+        """评估训练集，计算F1分数"""
+        self.model.eval()
+        self.modelF.eval()
+        with torch.no_grad():
+            golds = []
+            preds = []
+            for idx in range(len(self.trainset)):
+                data = self.trainset[idx]
+                golds.append(data["label_tensor"])
+                for k, v in data.items():
+                    if not k == "utterance_texts":
+                        data[k] = v.to(self.args.device)
+                y_hat = self.model(data, False)
+                preds.append(y_hat.detach().to("cpu"))
+            
+            if self.args.dataset == "mosei" and self.args.emotion == "multilabel":
+                golds = torch.cat(golds, dim=0).numpy()
+                preds = torch.cat(preds, dim=0).numpy()
+                f1 = metrics.f1_score(golds, preds, average="weighted")
+            else:
+                golds = torch.cat(golds, dim=-1).numpy()
+                preds = torch.cat(preds, dim=-1).numpy()
+                f1 = metrics.f1_score(golds, preds, average="weighted")
+        
+        self.model.train()
+        self.modelF.train()
+        return f1
+    
+    def save_training_history(self):
+        """保存训练历史到文件"""
+        import os
+        import json
+        
+        # 创建保存目录
+        save_dir = "training_history"
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # 保存为JSON文件
+        history_file = os.path.join(
+            save_dir,
+            f"{self.args.dataset}_{self.args.modalities}_history.json"
+        )
+        
+        # 转换numpy类型为Python原生类型
+        history_to_save = {
+            'epochs': self.training_history['epochs'],
+            'train_losses': [float(x) for x in self.training_history['train_losses']],
+            'train_f1s': [float(x) for x in self.training_history['train_f1s']],
+            'dev_f1s': [float(x) for x in self.training_history['dev_f1s']],
+            'test_f1s': [float(x) for x in self.training_history['test_f1s']],
+            'class_f1s': {
+                k: [float(x) for x in v] 
+                for k, v in self.training_history['class_f1s'].items()
+            }
+        }
+        
+        with open(history_file, 'w') as f:
+            json.dump(history_to_save, f, indent=2)
+        
+        log.info(f"Training history saved to {history_file}")
+        return history_file
 
     def evaluate(self, test=False):
         dev_loss = 0
@@ -191,6 +284,8 @@ class Coach:
                 preds = torch.cat(preds, dim=-1).numpy()
                 f1 = metrics.f1_score(golds, preds, average="weighted")
 
+            # 计算各类别F1分数（用于可视化）
+            class_f1s = {}
             if test:
                 print(
                     metrics.classification_report(
@@ -224,4 +319,24 @@ class Coach:
                         "disgust": disgust,
                         "fear": fear,
                     }
-        return f1, dev_loss
+                    class_f1s = f1
+                elif self.args.dataset in ["iemocap_4", "iemocap"]:
+                    # 计算每个类别的F1分数
+                    label_names = list(self.label_to_idx.keys())
+                    for i, label_name in enumerate(label_names):
+                        # 对于多分类，计算每个类别的F1
+                        class_f1 = metrics.f1_score(
+                            golds == i, preds == i, average="binary", zero_division=0
+                        )
+                        class_f1s[label_name] = class_f1
+            else:
+                # 对于dev集，也计算各类别F1（如果是IEMOCAP_4）
+                if self.args.dataset in ["iemocap_4", "iemocap"]:
+                    label_names = list(self.label_to_idx.keys())
+                    for i, label_name in enumerate(label_names):
+                        class_f1 = metrics.f1_score(
+                            golds == i, preds == i, average="binary", zero_division=0
+                        )
+                        class_f1s[label_name] = class_f1
+        
+        return f1, dev_loss, class_f1s
