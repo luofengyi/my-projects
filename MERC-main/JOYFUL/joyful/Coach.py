@@ -8,6 +8,7 @@ from tqdm import tqdm
 from sklearn import metrics
 
 import joyful
+from joyful.loss_utils import LossWeightConfig
 
 log = joyful.utils.get_logger()
 
@@ -55,6 +56,9 @@ class Coach:
         self.best_dev_f1 = None
         self.best_epoch = None
         self.best_state = None
+        
+        # 使用基础优化方案的损失权重配置
+        self.loss_weight_config = LossWeightConfig.from_args(args)
 
     def load_ckpt(self, ckpt):
         print('')
@@ -139,7 +143,11 @@ class Coach:
             for k, v in data.items():
                 if not k == "utterance_texts":
                     data[k] = v.to(self.args.device)
-            nll = self.model.get_loss(data,True) + 0.05*encoderL.to(self.args.device)
+            
+            # 使用基础优化方案：可配置的损失权重
+            encoder_loss_weight = self.loss_weight_config.encoder_loss_weight
+            nll = self.model.get_loss(data, True) + encoder_loss_weight * encoderL.to(self.args.device)
+            
             epoch_loss += nll.item()
             nll.backward()
             self.opt1.step()

@@ -1,4 +1,3 @@
-from joyful.fusion_methods import AutoFusion
 import argparse
 import torch
 import os
@@ -76,7 +75,24 @@ def main(args):
     data = joyful.utils.load_pkl(args.data)
     log.info("Loaded data.")
 
-    modelF = AutoFusion(1380)
+    # 计算input_features
+    input_features = args.dataset_embedding_dims[args.dataset][args.modalities]
+    
+    # 检查是否使用层次化融合
+    use_hierarchical = getattr(args, 'use_hierarchical_fusion', False)
+    
+    if use_hierarchical:
+        from joyful.fusion_methods_hierarchical import AutoFusion_Hierarchical
+        # 使用基础优化方案：支持SmoothL1Loss
+        modelF = AutoFusion_Hierarchical(
+            input_features,
+            use_smooth_l1=args.use_smooth_l1
+        )
+        log.info(f"Using AutoFusion_Hierarchical with SmoothL1Loss={args.use_smooth_l1}")
+    else:
+        from joyful.fusion_methods import AutoFusion
+        modelF = AutoFusion(input_features)
+        log.info("Using AutoFusion (original)")
 
     trainset = joyful.Dataset(data["train"], modelF, True, args)
     devset = joyful.Dataset(data["dev"], modelF, False, args)
@@ -164,6 +180,18 @@ if __name__ == "__main__":
     parser.add_argument("--drop_rate", type=float, default=0.3, help="Dropout rate.")
 
     parser.add_argument("--cl_loss_weight", type=float, default=0.2)
+    
+    # 基础优化方案参数
+    parser.add_argument("--encoder_loss_weight", type=float, default=0.03,
+                        help="Weight for encoder reconstruction loss (recommended: 0.03, original: 0.05)")
+    parser.add_argument("--use_smooth_l1", action="store_true", default=False,
+                        help="Use SmoothL1Loss instead of MSELoss for reconstruction (recommended)")
+    parser.add_argument("--gate_reg_weight", type=float, default=0.01,
+                        help="Weight for gate regularization (only for hierarchical fusion)")
+    
+    # 层次化融合选项
+    parser.add_argument("--use_hierarchical_fusion", action="store_true", default=False,
+                        help="Use hierarchical fusion (AutoFusion_Hierarchical)")
 
     parser.add_argument(
         "--max_grad_value",
