@@ -211,12 +211,16 @@ if __name__ == "__main__":
     # ULGM模块参数（单模态监督）
     parser.add_argument("--use_ulgm", action="store_true", default=False,
                         help="Use ULGM module for unimodal supervision")
-    parser.add_argument("--unimodal_loss_weight", type=float, default=0.2,
-                        help="Weight for unimodal loss (only when use_ulgm is enabled)")
+    parser.add_argument("--unimodal_loss_weight", type=float, default=0.01,
+                        help="Weight for unimodal loss (only when use_ulgm is enabled, recommended: 0.01-0.05)")
     parser.add_argument("--ulgm_hidden_size", type=int, default=128,
                         help="Hidden size for ULGM feature extraction")
     parser.add_argument("--ulgm_drop_rate", type=float, default=0.3,
                         help="Dropout rate for ULGM")
+    
+    # 梯度裁剪参数（用于防止梯度爆炸）
+    parser.add_argument("--max_grad_norm", type=float, default=1.0,
+                        help="Maximum gradient norm for clipping (0 to disable)")
 
     parser.add_argument(
         "--max_grad_value",

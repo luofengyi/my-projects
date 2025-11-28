@@ -347,42 +347,72 @@ class AutoFusion_Hierarchical(nn.Module):
             a: 音频特征 [100]
             t: 文本特征 [768]
             v: 视觉特征 [512]
-            labels: 标签 [batch_size] 或标量
+            labels: 标签（标量、单个值或tensor）
         
         Returns:
             unimodal_loss: 单模态总损失（已归一化）
         """
-        # 确保labels是tensor
-        if not isinstance(labels, torch.Tensor):
-            labels = torch.tensor(labels, dtype=torch.long, device=a.device)
+        # 处理labels：确保是标量（0维tensor）
+        # label应该是单个utterance的标签（标量值）
+        if isinstance(labels, torch.Tensor):
+            # 如果是tensor，转换为Python标量再转回tensor（确保是0维）
+            if labels.dim() > 0:
+                label_value = labels.item() if labels.numel() == 1 else labels[0].item()
+            else:
+                label_value = labels.item()
+            label = torch.tensor(label_value, dtype=torch.long, device=a.device)
+        else:
+            # 如果是Python标量，直接转换
+            label = torch.tensor(int(labels), dtype=torch.long, device=a.device)
         
-        # 如果labels是标量，扩展为1D tensor
-        if labels.dim() == 0:
-            labels = labels.unsqueeze(0)
+        # 确保label是标量（0维tensor）
+        assert label.dim() == 0, f"Label should be scalar (0-dim), got shape {label.shape}"
         
         # 文本特征提取和分类
         text_h = self.post_text_dropout(t)
         text_h = F_nn.relu(self.post_text_layer_1(text_h), inplace=False)
         x_t = F_nn.relu(self.post_text_layer_2(text_h), inplace=False)
-        output_text = self.post_text_layer_3(x_t)
-        text_log_prob = F_nn.log_softmax(output_text, dim=-1)
-        text_loss = self.unimodal_criterion(text_log_prob, labels)
+        output_text = self.post_text_layer_3(x_t)  # [num_classes]
+        
+        # 确保output_text是1D的
+        if output_text.dim() > 1:
+            output_text = output_text.squeeze()
+        elif output_text.dim() == 0:
+            # 如果意外变成标量，需要重新处理
+            output_text = output_text.unsqueeze(0)
+        
+        # NLLLoss需要：[1, num_classes] 和 [1] 或 [num_classes] 和 标量
+        # 这里使用 [num_classes] 和 标量
+        text_log_prob = F_nn.log_softmax(output_text, dim=-1)  # [num_classes]
+        text_loss = self.unimodal_criterion(text_log_prob, label)
         
         # 音频特征提取和分类
         audio_h = self.post_audio_dropout(a)
         audio_h = F_nn.relu(self.post_audio_layer_1(audio_h), inplace=False)
         x_a = F_nn.relu(self.post_audio_layer_2(audio_h), inplace=False)
-        output_audio = self.post_audio_layer_3(x_a)
-        audio_log_prob = F_nn.log_softmax(output_audio, dim=-1)
-        audio_loss = self.unimodal_criterion(audio_log_prob, labels)
+        output_audio = self.post_audio_layer_3(x_a)  # [num_classes]
+        
+        if output_audio.dim() > 1:
+            output_audio = output_audio.squeeze()
+        elif output_audio.dim() == 0:
+            output_audio = output_audio.unsqueeze(0)
+        
+        audio_log_prob = F_nn.log_softmax(output_audio, dim=-1)  # [num_classes]
+        audio_loss = self.unimodal_criterion(audio_log_prob, label)
         
         # 视觉特征提取和分类
         video_h = self.post_video_dropout(v)
         video_h = F_nn.relu(self.post_video_layer_1(video_h), inplace=False)
         x_v = F_nn.relu(self.post_video_layer_2(video_h), inplace=False)
-        output_video = self.post_video_layer_3(x_v)
-        video_log_prob = F_nn.log_softmax(output_video, dim=-1)
-        video_loss = self.unimodal_criterion(video_log_prob, labels)
+        output_video = self.post_video_layer_3(x_v)  # [num_classes]
+        
+        if output_video.dim() > 1:
+            output_video = output_video.squeeze()
+        elif output_video.dim() == 0:
+            output_video = output_video.unsqueeze(0)
+        
+        video_log_prob = F_nn.log_softmax(output_video, dim=-1)  # [num_classes]
+        video_loss = self.unimodal_criterion(video_log_prob, label)
         
         # 总单模态损失：对三个模态损失求平均（归一化）
         # 这样可以避免损失过大，保持与主损失的量级匹配
