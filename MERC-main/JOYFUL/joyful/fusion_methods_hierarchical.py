@@ -217,12 +217,8 @@ class AutoFusion_Hierarchical(nn.Module):
             nn.Linear(1024, input_features)
         )
 
-        # 使用基础优化方案创建重构损失
-        # 支持SmoothL1Loss（更鲁棒）或MSELoss（原始）
-        self.criterion = create_reconstruction_loss(
-            use_smooth_l1=use_smooth_l1,
-            reduction='mean'
-        )
+        # allow switching to SmoothL1Loss for reconstruction when requested
+        self.criterion = nn.SmoothL1Loss() if use_smooth_l1 else nn.MSELoss()
 
         # 局部特征学习的投影层（保持不变）
         self.projectA = nn.Linear(100, 460)
