@@ -177,11 +177,24 @@ class Coach:
             
             # 添加单模态损失（ULGM模块，如果存在）
             if 'unimodal_loss' in data:
-                unimodal_loss_weight = getattr(self.args, 'unimodal_loss_weight', 0.2)
-                nll = nll + unimodal_loss_weight * data['unimodal_loss'].to(self.args.device)
+                # 降低默认权重：从0.2降到0.01，避免单模态损失过大导致训练不稳定
+                unimodal_loss_weight = getattr(self.args, 'unimodal_loss_weight', 0.01)
+                unimodal_loss = data['unimodal_loss'].to(self.args.device)
+                # 确保单模态损失是标量
+                if isinstance(unimodal_loss, torch.Tensor):
+                    if unimodal_loss.dim() > 0:
+                        unimodal_loss = unimodal_loss.mean()
+                nll = nll + unimodal_loss_weight * unimodal_loss
             
             epoch_loss += nll.item()
             nll.backward()
+            
+            # 添加梯度裁剪，防止梯度爆炸导致训练不稳定
+            max_grad_norm = getattr(self.args, 'max_grad_norm', 1.0)
+            if max_grad_norm > 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(self.modelF.parameters(), max_norm=max_grad_norm)
+            
             self.opt1.step()
 
         # 计算训练集F1分数

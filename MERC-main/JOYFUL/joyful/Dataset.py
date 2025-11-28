@@ -125,9 +125,10 @@ class Dataset:
             "encoder_loss": losst
         }
         
-        # 如果有单模态损失，添加到data中
+        # 如果有单模态损失，添加到data中（归一化：按utterance数量平均）
         if unimodal_losses:
-            data["unimodal_loss"] = sum(unimodal_losses)
+            # 归一化：避免batch中utterance数量导致的损失累积过大
+            data["unimodal_loss"] = sum(unimodal_losses) / len(unimodal_losses) if len(unimodal_losses) > 0 else torch.tensor(0.0)
         
         return data
 
