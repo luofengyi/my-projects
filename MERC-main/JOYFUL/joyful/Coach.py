@@ -175,6 +175,11 @@ class Coach:
             encoder_loss_weight = self.loss_weight_config.encoder_loss_weight
             nll = self.model.get_loss(data, True) + encoder_loss_weight * encoderL.to(self.args.device)
             
+            # 添加单模态损失（ULGM模块，如果存在）
+            if 'unimodal_loss' in data:
+                unimodal_loss_weight = getattr(self.args, 'unimodal_loss_weight', 0.2)
+                nll = nll + unimodal_loss_weight * data['unimodal_loss'].to(self.args.device)
+            
             epoch_loss += nll.item()
             nll.backward()
             self.opt1.step()

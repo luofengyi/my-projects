@@ -83,12 +83,26 @@ def main(args):
     
     if use_hierarchical:
         from joyful.fusion_methods_hierarchical import AutoFusion_Hierarchical
-        # 使用基础优化方案：支持SmoothL1Loss
+        
+        # 获取类别数量
+        dataset_label_dict = {
+            "iemocap": 6,
+            "iemocap_4": 4,
+            "mosei": 2,
+            "meld": 7
+        }
+        num_classes = dataset_label_dict.get(args.dataset, 4)
+        
+        # 使用基础优化方案：支持SmoothL1Loss和ULGM
         modelF = AutoFusion_Hierarchical(
             input_features,
-            use_smooth_l1=args.use_smooth_l1
+            use_smooth_l1=args.use_smooth_l1,
+            use_ulgm=args.use_ulgm,
+            num_classes=num_classes,
+            hidden_size=args.ulgm_hidden_size,
+            drop_rate=args.ulgm_drop_rate
         )
-        log.info(f"Using AutoFusion_Hierarchical with SmoothL1Loss={args.use_smooth_l1}")
+        log.info(f"Using AutoFusion_Hierarchical with SmoothL1Loss={args.use_smooth_l1}, ULGM={args.use_ulgm}")
     else:
         from joyful.fusion_methods import AutoFusion
         modelF = AutoFusion(input_features)
@@ -192,6 +206,16 @@ if __name__ == "__main__":
     # 层次化融合选项
     parser.add_argument("--use_hierarchical_fusion", action="store_true", default=False,
                         help="Use hierarchical fusion (AutoFusion_Hierarchical)")
+    
+    # ULGM模块参数（单模态监督）
+    parser.add_argument("--use_ulgm", action="store_true", default=False,
+                        help="Use ULGM module for unimodal supervision")
+    parser.add_argument("--unimodal_loss_weight", type=float, default=0.2,
+                        help="Weight for unimodal loss (only when use_ulgm is enabled)")
+    parser.add_argument("--ulgm_hidden_size", type=int, default=128,
+                        help="Hidden size for ULGM feature extraction")
+    parser.add_argument("--ulgm_drop_rate", type=float, default=0.3,
+                        help="Dropout rate for ULGM")
 
     parser.add_argument(
         "--max_grad_value",

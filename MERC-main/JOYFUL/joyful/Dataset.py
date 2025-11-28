@@ -50,12 +50,32 @@ class Dataset:
             utterances.append(s.sentence)
             tmp = []
             losst = 0
-            for t, a, v in zip(s.sbert_sentence_embeddings, s.audio, s.visual):
+            unimodal_losses = []  # ULGM单模态损失
+            
+            for t, a, v, label in zip(s.sbert_sentence_embeddings, s.audio, s.visual, s.label):
                 t = torch.tensor(t, dtype=torch.float32)
                 a = torch.tensor(a, dtype=torch.float32)
                 v = torch.tensor(v, dtype=torch.float32)
+                
                 if self.modalities == "atv":
-                    output, loss = self.modelF(a, t, v)
+                    # 检查是否启用ULGM，如果启用则传递标签
+                    if hasattr(self.modelF, 'use_ulgm') and self.modelF.use_ulgm:
+                        result = self.modelF(a, t, v, labels=label)
+                        # 处理返回值（可能是2个或3个）
+                        if isinstance(result, tuple) and len(result) == 3:
+                            output, loss, unimodal_loss = result
+                            if unimodal_loss is not None:
+                                unimodal_losses.append(unimodal_loss)
+                        else:
+                            output, loss = result
+                    else:
+                        result = self.modelF(a, t, v)
+                        # 为了兼容性，如果forward返回3个值，只取前2个
+                        if isinstance(result, tuple) and len(result) == 3:
+                            output, loss = result[0], result[1]
+                        else:
+                            output, loss = result
+                    
                     tmp.append(output)
                     losst += loss
                 elif self.modalities == "at":
@@ -104,6 +124,11 @@ class Dataset:
             "utterance_texts": utterances,
             "encoder_loss": losst
         }
+        
+        # 如果有单模态损失，添加到data中
+        if unimodal_losses:
+            data["unimodal_loss"] = sum(unimodal_losses)
+        
         return data
 
     def shuffle(self):

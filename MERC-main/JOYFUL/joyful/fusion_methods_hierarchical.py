@@ -8,6 +8,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from joyful.loss_utils import create_reconstruction_loss
+import torch.nn.functional as F_nn
 
 
 class UtteranceLevelGate(nn.Module):
@@ -176,15 +177,21 @@ class AutoFusion_Hierarchical(nn.Module):
     改进的AutoFusion - 集成层次化动态门控机制
     只在上下文融合部分进行修改，保持其他部分不变
     """
-    def __init__(self, input_features, use_smooth_l1=False):
+    def __init__(self, input_features, use_smooth_l1=False, 
+                 use_ulgm=False, num_classes=4, hidden_size=128, drop_rate=0.3):
         """
         Args:
             input_features: 输入特征维度
             use_smooth_l1: 是否使用SmoothL1Loss（基础优化方案），默认False使用MSELoss
+            use_ulgm: 是否启用ULGM模块（单模态监督）
+            num_classes: 情感类别数量
+            hidden_size: 单模态特征提取的隐藏层维度
+            drop_rate: Dropout率
         """
         super(AutoFusion_Hierarchical, self).__init__()
         self.input_features = input_features
         self.use_smooth_l1 = use_smooth_l1
+        self.use_ulgm = use_ulgm
 
         # 改进：内层话语级门控（替换原来的fuse_inGlobal）
         self.utterance_gate = UtteranceLevelGate(input_features, 512)
@@ -224,16 +231,49 @@ class AutoFusion_Hierarchical(nn.Module):
         self.projectB = nn.Sequential(
             nn.Linear(460, 460),
         )
+        
+        # ========== ULGM模块：单模态监督（可选） ==========
+        if use_ulgm:
+            # 单模态特征提取层
+            # 文本特征提取
+            self.post_text_dropout = nn.Dropout(drop_rate)
+            self.post_text_layer_1 = nn.Linear(768, hidden_size)
+            
+            # 音频特征提取
+            self.post_audio_dropout = nn.Dropout(drop_rate)
+            self.post_audio_layer_1 = nn.Linear(100, hidden_size)
+            
+            # 视觉特征提取
+            self.post_video_dropout = nn.Dropout(drop_rate)
+            self.post_video_layer_1 = nn.Linear(512, hidden_size)
+            
+            # 单模态分类器
+            # 文本分类器
+            self.post_text_layer_2 = nn.Linear(hidden_size, hidden_size)
+            self.post_text_layer_3 = nn.Linear(hidden_size, num_classes)
+            
+            # 音频分类器
+            self.post_audio_layer_2 = nn.Linear(hidden_size, hidden_size)
+            self.post_audio_layer_3 = nn.Linear(hidden_size, num_classes)
+            
+            # 视觉分类器
+            self.post_video_layer_2 = nn.Linear(hidden_size, hidden_size)
+            self.post_video_layer_3 = nn.Linear(hidden_size, num_classes)
+            
+            # 单模态损失函数
+            self.unimodal_criterion = nn.NLLLoss()
 
-    def forward(self, a, t, v):
+    def forward(self, a, t, v, labels=None):
         """
         Args:
             a: 音频特征 [100]
             t: 文本特征 [768]
             v: 视觉特征 [512]
+            labels: 标签（可选，仅训练时需要，用于ULGM）
         Returns:
             output: 融合后的特征 [2, 512] (与原始AutoFusion保持一致)
             loss: 重构损失
+            unimodal_loss: 单模态损失（仅训练时，如果启用ULGM，否则为None）
         """
         # ========== 局部特征学习部分（保持不变） ==========
         B = self.projectB(torch.ones(460, device=a.device))
@@ -287,6 +327,11 @@ class AutoFusion_Hierarchical(nn.Module):
         # globalCompressed: [512], interCompressed: [512]
         # cat后: [1024]
         output = torch.cat((globalCompressed, interCompressed), 0)
-
-        return output, loss
+        
+        # ========== ULGM模块：单模态监督（仅训练时） ==========
+        unimodal_loss = None
+        if self.use_ulgm and self.training and labels is not None:
+            unimodal_loss = self._compute_unimodal_loss(a, t, v, labels)
+        
+        return output, loss, unimodal_loss
 
