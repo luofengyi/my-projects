@@ -102,7 +102,7 @@ class Coach:
             self.training_history['train_losses'].append(train_loss)
             self.training_history['train_f1s'].append(train_f1)
             self.training_history['dev_f1s'].append(dev_f1)
-            self.training_history['test_f1s'].append(test_f1 if isinstance(test_f1, (int, float)) else np.array(list(test_f1.values())).mean() if isinstance(test_f1, dict) else test_f1))
+            self.training_history['test_f1s'].append(test_f1 if isinstance(test_f1, (int, float)) else np.array(list(test_f1.values())).mean() if isinstance(test_f1, dict) else test_f1)
             
             # 记录各类别F1分数（如果是IEMOCAP_4）
             if self.args.dataset in ["iemocap_4", "iemocap"] and isinstance(test_class_f1s, dict):
