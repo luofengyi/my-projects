@@ -144,7 +144,13 @@ def main(args):
             num_classes=num_classes,
             hidden_size=args.ulgm_hidden_size,
             drop_rate=args.ulgm_drop_rate,
-            class_weights=ulgm_class_weights
+            class_weights=ulgm_class_weights,
+            ulgm_text_only=args.ulgm_text_only,
+            ulgm_weights=(
+                args.ulgm_text_weight,
+                args.ulgm_audio_weight,
+                args.ulgm_video_weight,
+            )
         )
         log.info(f"Using AutoFusion_Hierarchical with SmoothL1Loss={args.use_smooth_l1}, ULGM={args.use_ulgm}")
     else:
@@ -260,6 +266,14 @@ if __name__ == "__main__":
                         help="Hidden size for ULGM feature extraction")
     parser.add_argument("--ulgm_drop_rate", type=float, default=0.3,
                         help="Dropout rate for ULGM")
+    parser.add_argument("--ulgm_text_only", action="store_true", default=False,
+                        help="Only use text branch for ULGM (ignores audio/video losses)")
+    parser.add_argument("--ulgm_text_weight", type=float, default=1.0,
+                        help="Weight for text loss inside ULGM when not text-only")
+    parser.add_argument("--ulgm_audio_weight", type=float, default=0.5,
+                        help="Weight for audio loss inside ULGM when not text-only")
+    parser.add_argument("--ulgm_video_weight", type=float, default=0.5,
+                        help="Weight for video loss inside ULGM when not text-only")
     
     # 梯度裁剪参数（用于防止梯度爆炸）
     parser.add_argument("--max_grad_norm", type=float, default=1.0,

@@ -179,7 +179,7 @@ class AutoFusion_Hierarchical(nn.Module):
     """
     def __init__(self, input_features, use_smooth_l1=False, 
                  use_ulgm=False, num_classes=4, hidden_size=128, drop_rate=0.3,
-                 class_weights=None):
+                 class_weights=None, ulgm_text_only=False, ulgm_weights=None):
         """
         Args:
             input_features: 输入特征维度
@@ -195,6 +195,11 @@ class AutoFusion_Hierarchical(nn.Module):
         self.use_smooth_l1 = use_smooth_l1
         self.use_ulgm = use_ulgm
         self.unimodal_class_weights = None
+        self.ulgm_text_only = ulgm_text_only
+        if ulgm_weights is None:
+            self.ulgm_weights = (1.0, 1.0, 1.0)  # text, audio, video
+        else:
+            self.ulgm_weights = ulgm_weights
 
         # 改进：内层话语级门控（替换原来的fuse_inGlobal）
         self.utterance_gate = UtteranceLevelGate(input_features, 512)
@@ -425,9 +430,21 @@ class AutoFusion_Hierarchical(nn.Module):
         video_log_prob = F_nn.log_softmax(output_video, dim=-1)  # [num_classes]
         video_loss = self.unimodal_criterion(video_log_prob, label)
         
-        # 总单模态损失：对三个模态损失求平均（归一化）
-        # 这样可以避免损失过大，保持与主损失的量级匹配
-        total_unimodal_loss = (text_loss + audio_loss + video_loss) / 3.0
+        # 根据配置组合单模态损失
+        if self.ulgm_text_only:
+            total_unimodal_loss = text_loss
+        else:
+            txt_w, aud_w, vid_w = self.ulgm_weights
+            losses = []
+            weights = []
+            losses.append((text_loss, txt_w))
+            if aud_w > 0:
+                losses.append((audio_loss, aud_w))
+            if vid_w > 0:
+                losses.append((video_loss, vid_w))
+            weighted_sum = sum(loss * w for loss, w in losses)
+            weight_total = sum(w for _, w in losses)
+            total_unimodal_loss = weighted_sum / max(weight_total, 1e-6)
         
         return total_unimodal_loss
 
