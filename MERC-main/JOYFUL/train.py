@@ -15,6 +15,42 @@ def load_pkl(file):
         return pickle.load(f)
 
 
+def get_ulgm_class_weights(args):
+    """
+    返回ULGM使用的类别权重，优先与Classifier中的设置保持一致。
+    若当前数据集未预定义，返回None（表示不使用权重）。
+    """
+    dataset_weights = {
+        "iemocap": [
+            1 / 0.086747,
+            1 / 0.144406,
+            1 / 0.157883,
+            1 / 0.160585,
+            1 / 0.127711,
+            1 / 0.182668,
+        ],
+        "iemocap_4": [
+            1 / 0.1426370239929562,
+            1 / 0.2386088487783403,
+            1 / 0.37596302003081666,
+            1 / 0.24279110719788685,
+        ],
+        "meld": [
+            1 / 0.286747,
+            1 / 0.144406,
+            1 / 0.157883,
+            1 / 0.05085,
+            1 / 0.187711,
+            1 / 0.182668,
+            1 / 0.182668,
+        ],
+    }
+    weights = dataset_weights.get(args.dataset)
+    if weights is None:
+        return None
+    return torch.tensor(weights, dtype=torch.float32, device=args.device)
+
+
 def func(experiment, trainset, devset, testset, model, opt, sched, args):
     args.hidden_size = experiment.get_parameter("HIDDEN_DIM")
     args.seqcontext_nlayer = experiment.get_parameter("SEQCONTEXT")
@@ -93,6 +129,12 @@ def main(args):
             "meld": 7
         }
         num_classes = dataset_label_dict.get(args.dataset, 4)
+
+        ulgm_class_weights = None
+        if args.use_ulgm:
+            ulgm_class_weights = get_ulgm_class_weights(args)
+            if ulgm_class_weights is None:
+                log.warning("ULGM class weights not defined for dataset '%s'; falling back to uniform weighting.", args.dataset)
         
         # 使用基础优化方案：支持SmoothL1Loss和ULGM
         modelF = AutoFusion_Hierarchical(
@@ -101,7 +143,8 @@ def main(args):
             use_ulgm=args.use_ulgm,
             num_classes=num_classes,
             hidden_size=args.ulgm_hidden_size,
-            drop_rate=args.ulgm_drop_rate
+            drop_rate=args.ulgm_drop_rate,
+            class_weights=ulgm_class_weights
         )
         log.info(f"Using AutoFusion_Hierarchical with SmoothL1Loss={args.use_smooth_l1}, ULGM={args.use_ulgm}")
     else:
@@ -211,8 +254,8 @@ if __name__ == "__main__":
     # ULGM模块参数（单模态监督）
     parser.add_argument("--use_ulgm", action="store_true", default=False,
                         help="Use ULGM module for unimodal supervision")
-    parser.add_argument("--unimodal_loss_weight", type=float, default=0.01,
-                        help="Weight for unimodal loss (only when use_ulgm is enabled, recommended: 0.01-0.05)")
+    parser.add_argument("--unimodal_loss_weight", type=float, default=0.002,
+                        help="Weight for unimodal loss (only when use_ulgm is enabled, recommended: 0.001-0.01)")
     parser.add_argument("--ulgm_hidden_size", type=int, default=128,
                         help="Hidden size for ULGM feature extraction")
     parser.add_argument("--ulgm_drop_rate", type=float, default=0.3,

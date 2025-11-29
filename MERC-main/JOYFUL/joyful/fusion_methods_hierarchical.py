@@ -178,7 +178,8 @@ class AutoFusion_Hierarchical(nn.Module):
     只在上下文融合部分进行修改，保持其他部分不变
     """
     def __init__(self, input_features, use_smooth_l1=False, 
-                 use_ulgm=False, num_classes=4, hidden_size=128, drop_rate=0.3):
+                 use_ulgm=False, num_classes=4, hidden_size=128, drop_rate=0.3,
+                 class_weights=None):
         """
         Args:
             input_features: 输入特征维度
@@ -187,11 +188,13 @@ class AutoFusion_Hierarchical(nn.Module):
             num_classes: 情感类别数量
             hidden_size: 单模态特征提取的隐藏层维度
             drop_rate: Dropout率
+            class_weights: 单模态分类损失的类别权重（用于缓解类别不平衡）
         """
         super(AutoFusion_Hierarchical, self).__init__()
         self.input_features = input_features
         self.use_smooth_l1 = use_smooth_l1
         self.use_ulgm = use_ulgm
+        self.unimodal_class_weights = None
 
         # 改进：内层话语级门控（替换原来的fuse_inGlobal）
         self.utterance_gate = UtteranceLevelGate(input_features, 512)
@@ -230,6 +233,14 @@ class AutoFusion_Hierarchical(nn.Module):
         
         # ========== ULGM模块：单模态监督（可选） ==========
         if use_ulgm:
+            # 处理类别权重：如果提供则转为Tensor并缓存
+            if class_weights is not None:
+                if not isinstance(class_weights, torch.Tensor):
+                    class_weights = torch.tensor(class_weights, dtype=torch.float32, device=self.global_emotion_state.device)
+                else:
+                    class_weights = class_weights.to(self.global_emotion_state.device)
+                self.unimodal_class_weights = class_weights
+            
             # 单模态特征提取层
             # 文本特征提取
             self.post_text_dropout = nn.Dropout(drop_rate)
@@ -257,7 +268,7 @@ class AutoFusion_Hierarchical(nn.Module):
             self.post_video_layer_3 = nn.Linear(hidden_size, num_classes)
             
             # 单模态损失函数
-            self.unimodal_criterion = nn.NLLLoss()
+            self.unimodal_criterion = nn.NLLLoss(weight=self.unimodal_class_weights)
             
             # 改进初始化：使用Xavier初始化，避免梯度爆炸
             for layer in [self.post_text_layer_1, self.post_text_layer_2, self.post_text_layer_3,
