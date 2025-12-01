@@ -179,7 +179,8 @@ class AutoFusion_Hierarchical(nn.Module):
     """
     def __init__(self, input_features, use_smooth_l1=False, 
                  use_ulgm=False, num_classes=4, hidden_size=128, drop_rate=0.3,
-                 class_weights=None, ulgm_text_only=False, ulgm_weights=None):
+                 class_weights=None, gate_reg_weight=0.01,
+                 ulgm_text_only=False, ulgm_weights=None):
         """
         Args:
             input_features: 输入特征维度
@@ -195,6 +196,7 @@ class AutoFusion_Hierarchical(nn.Module):
         self.use_smooth_l1 = use_smooth_l1
         self.use_ulgm = use_ulgm
         self.unimodal_class_weights = None
+        self.gate_reg_weight = gate_reg_weight
         self.ulgm_text_only = ulgm_text_only
         if ulgm_weights is None:
             self.ulgm_weights = (1.0, 1.0, 1.0)  # text, audio, video
@@ -333,11 +335,14 @@ class AutoFusion_Hierarchical(nn.Module):
         # 门控正则化：防止门控值过度饱和，增强训练稳定性
         # 鼓励门控值接近0.5（中间值），避免过度偏向0或1
         # 这有助于避免梯度消失，保持门控的灵活性
-        gate_regularization = (
-            torch.mean((gates['temporal_gate'] - 0.5) ** 2) +
-            torch.mean((gates['forget_gate'] - 0.5) ** 2) +
-            torch.mean((gates['input_gate'] - 0.5) ** 2)
-        ) * 0.01  # 正则化系数，可根据需要调整
+        if self.gate_reg_weight > 0:
+            gate_regularization = (
+                torch.mean((gates['temporal_gate'] - 0.5) ** 2) +
+                torch.mean((gates['forget_gate'] - 0.5) ** 2) +
+                torch.mean((gates['input_gate'] - 0.5) ** 2)
+            ) * self.gate_reg_weight
+        else:
+            gate_regularization = globalLoss.new_tensor(0.0)
 
         # 总损失：重构损失 + 门控正则化
         loss = globalLoss + interLoss + gate_regularization
