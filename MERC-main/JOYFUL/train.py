@@ -48,7 +48,22 @@ def get_ulgm_class_weights(args):
     weights = dataset_weights.get(args.dataset)
     if weights is None:
         return None
-    return torch.tensor(weights, dtype=torch.float32, device=args.device)
+    weight_tensor = torch.tensor(weights, dtype=torch.float32, device=args.device)
+    min_ratio = getattr(args, "ulgm_rebalance_min_ratio", 0.4)
+    max_ratio = getattr(args, "ulgm_rebalance_max_ratio", 2.5)
+    return rebalance_class_weights(weight_tensor, min_ratio, max_ratio)
+
+
+def rebalance_class_weights(weight_tensor, min_ratio=0.4, max_ratio=2.5, eps=1e-8):
+    """
+    对类别权重做再平衡，避免极端比值导致训练不稳定。
+    将权重归一化到均值为1，再根据给定区间裁剪后重新归一化。
+    """
+    if weight_tensor is None:
+        return None
+    normalized = weight_tensor / (weight_tensor.mean() + eps)
+    clamped = torch.clamp(normalized, min_ratio, max_ratio)
+    return clamped / (clamped.mean() + eps)
 
 
 def func(experiment, trainset, devset, testset, model, opt, sched, args):
@@ -261,8 +276,14 @@ if __name__ == "__main__":
     # ULGM模块参数（单模态监督）
     parser.add_argument("--use_ulgm", action="store_true", default=False,
                         help="Use ULGM module for unimodal supervision")
-    parser.add_argument("--unimodal_loss_weight", type=float, default=0.002,
-                        help="Weight for unimodal loss (only when use_ulgm is enabled, recommended: 0.001-0.01)")
+    parser.add_argument("--unimodal_loss_weight", type=float, default=0.001,
+                        help="Target weight for unimodal loss (late-training, recommended: 0.0005-0.005)")
+    parser.add_argument("--unimodal_init_weight", type=float, default=0.0,
+                        help="Initial weight before warmup (set to 0 to disable early ULGM influence)")
+    parser.add_argument("--unimodal_warmup_epochs", type=int, default=5,
+                        help="Number of epochs to linearly ramp from init weight to target weight")
+    parser.add_argument("--unimodal_delay_epochs", type=int, default=0,
+                        help="Epochs to keep weight at init value before warmup begins")
     parser.add_argument("--ulgm_hidden_size", type=int, default=128,
                         help="Hidden size for ULGM feature extraction")
     parser.add_argument("--ulgm_drop_rate", type=float, default=0.3,
@@ -275,6 +296,10 @@ if __name__ == "__main__":
                         help="Weight for audio loss inside ULGM when not text-only")
     parser.add_argument("--ulgm_video_weight", type=float, default=0.5,
                         help="Weight for video loss inside ULGM when not text-only")
+    parser.add_argument("--ulgm_rebalance_min_ratio", type=float, default=0.4,
+                        help="Lower bound for normalized ULGM class weights (prevents extreme ratios)")
+    parser.add_argument("--ulgm_rebalance_max_ratio", type=float, default=2.5,
+                        help="Upper bound for normalized ULGM class weights")
     
     # 梯度裁剪参数（用于防止梯度爆炸）
     parser.add_argument("--max_grad_norm", type=float, default=1.0,
