@@ -145,6 +145,7 @@ def main(args):
             hidden_size=args.ulgm_hidden_size,
             drop_rate=args.ulgm_drop_rate,
             class_weights=ulgm_class_weights,
+            gate_reg_weight=args.gate_reg_weight,
             ulgm_text_only=args.ulgm_text_only,
             ulgm_weights=(
                 args.ulgm_text_weight,
