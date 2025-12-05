@@ -261,7 +261,13 @@ if __name__ == "__main__":
     parser.add_argument("--use_ulgm", action="store_true", default=False,
                         help="Use ULGM module for unimodal supervision")
     parser.add_argument("--unimodal_loss_weight", type=float, default=0.002,
-                        help="Weight for unimodal loss (only when use_ulgm is enabled, recommended: 0.001-0.01)")
+                        help="Target weight for ULGM loss after warmup (e.g., 0.0005-0.005)")
+    parser.add_argument("--unimodal_init_weight", type=float, default=0.0,
+                        help="Initial ULGM weight before warmup (0 keeps ULGM off early)")
+    parser.add_argument("--unimodal_warmup_epochs", type=int, default=5,
+                        help="Epochs to linearly ramp ULGM weight from init to target")
+    parser.add_argument("--unimodal_delay_epochs", type=int, default=0,
+                        help="Epochs to hold init weight before warmup begins")
     parser.add_argument("--ulgm_hidden_size", type=int, default=128,
                         help="Hidden size for ULGM feature extraction")
     parser.add_argument("--ulgm_drop_rate", type=float, default=0.3,
