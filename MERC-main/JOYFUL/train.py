@@ -161,6 +161,7 @@ def main(args):
             drop_rate=args.ulgm_drop_rate,
             class_weights=ulgm_class_weights,
             gate_reg_weight=args.gate_reg_weight,
+            global_residual_alpha=args.global_residual_alpha,
             ulgm_text_only=args.ulgm_text_only,
             ulgm_weights=(
                 args.ulgm_text_weight,
@@ -268,6 +269,8 @@ if __name__ == "__main__":
                         help="Use SmoothL1Loss instead of MSELoss for reconstruction (recommended)")
     parser.add_argument("--gate_reg_weight", type=float, default=0.01,
                         help="Weight for gate regularization (only for hierarchical fusion)")
+    parser.add_argument("--global_residual_alpha", type=float, default=0.3,
+                        help="Blend ratio for skip connection from raw concat features back into hierarchical global output (0 disables residual)")
     
     # 层次化融合选项
     parser.add_argument("--use_hierarchical_fusion", action="store_true", default=False,
