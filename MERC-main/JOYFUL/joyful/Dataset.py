@@ -16,6 +16,9 @@ class Dataset:
         self.speaker_to_idx = {"M": 0, "F": 1}
         self.modalities = args.modalities
         self.dataset = args.dataset
+        # rPPG相关配置（可选）
+        self.use_rppg = getattr(args, "use_rppg", False)
+        self.rppg_raw_dim = getattr(args, "rppg_raw_dim", 64)
         if WT:
             self.modelF.train()
         else:
@@ -52,24 +55,40 @@ class Dataset:
             losst = 0
             unimodal_losses = []  # ULGM单模态损失
             
-            for t, a, v, label in zip(s.sbert_sentence_embeddings, s.audio, s.visual, s.label):
-                t = torch.tensor(t, dtype=torch.float32)
-                a = torch.tensor(a, dtype=torch.float32)
-                v = torch.tensor(v, dtype=torch.float32)
+            # 逐utterance处理，兼容可选的rPPG特征
+            for idx in range(cur_len):
+                t = torch.tensor(s.sbert_sentence_embeddings[idx], dtype=torch.float32)
+                a = torch.tensor(s.audio[idx], dtype=torch.float32)
+                v = torch.tensor(s.visual[idx], dtype=torch.float32)
+                label = s.label[idx]
+                
+                # rPPG特征：如不存在则使用零向量，保证向后兼容
+                if self.use_rppg:
+                    if hasattr(s, "rppg") and len(s.rppg) > idx:
+                        rppg_feat = torch.tensor(s.rppg[idx], dtype=torch.float32)
+                    elif hasattr(s, "rppg_features") and len(s.rppg_features) > idx:
+                        rppg_feat = torch.tensor(s.rppg_features[idx], dtype=torch.float32)
+                    else:
+                        rppg_feat = torch.zeros(self.rppg_raw_dim, dtype=torch.float32)
+                else:
+                    rppg_feat = None
                 
                 if self.modalities == "atv":
                     # 检查是否启用ULGM，如果启用则传递标签
                     if hasattr(self.modelF, 'use_ulgm') and self.modelF.use_ulgm:
-                        result = self.modelF(a, t, v, labels=label)
+                        result = self.modelF(a, t, v, rppg=rppg_feat, labels=label)
                         # 处理返回值（可能是2个或3个）
                         if isinstance(result, tuple) and len(result) == 3:
                             output, loss, unimodal_loss = result
                             if unimodal_loss is not None:
                                 unimodal_losses.append(unimodal_loss)
                         else:
-                            output, loss = result
+                            if isinstance(result, tuple) and len(result) >= 2:
+                                output, loss = result[0], result[1]
+                            else:
+                                output, loss = result
                     else:
-                        result = self.modelF(a, t, v)
+                        result = self.modelF(a, t, v, rppg=rppg_feat)
                         # 为了兼容性，如果forward返回3个值，只取前2个
                         if isinstance(result, tuple) and len(result) == 3:
                             output, loss = result[0], result[1]

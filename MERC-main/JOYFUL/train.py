@@ -172,9 +172,11 @@ def main(args):
             args.class_weights_tensor = weight_tensor
             log.info(f"Auto class weights computed and applied: {weight_tensor.cpu().numpy()}")
 
-    # 计算input_features: use raw concatenated modality sizes for the fusion module
+    # 计算input_features: 基于原始模态维度，如果启用rPPG则添加其投影维度
     # keep args.dataset_embedding_dims as the final fused embedding size used later
     input_features = args.dataset_raw_dims[args.dataset][args.modalities]
+    if getattr(args, "use_rppg", False):
+        input_features = input_features + args.rppg_proj_dim
     
     # 检查是否使用层次化融合
     use_hierarchical = getattr(args, 'use_hierarchical_fusion', False)
@@ -227,7 +229,10 @@ def main(args):
                 args.ulgm_audio_weight,
                 args.ulgm_video_weight,
             ),
-            ulgm_class_config=ulgm_class_config
+            ulgm_class_config=ulgm_class_config,
+            use_rppg=args.use_rppg,
+            rppg_raw_dim=args.rppg_raw_dim,
+            rppg_proj_dim=args.rppg_proj_dim
         )
         log.info(f"Using AutoFusion_Hierarchical with SmoothL1Loss={args.use_smooth_l1}, ULGM={args.use_ulgm}")
     else:
@@ -367,6 +372,14 @@ if __name__ == "__main__":
                         help="Lower bound for normalized ULGM class weights (prevents extreme ratios)")
     parser.add_argument("--ulgm_rebalance_max_ratio", type=float, default=2.5,
                         help="Upper bound for normalized ULGM class weights")
+    
+    # rPPG模态参数（可选）
+    parser.add_argument("--use_rppg", action="store_true", default=False,
+                        help="Enable rPPG modality extracted from facial video")
+    parser.add_argument("--rppg_raw_dim", type=int, default=64,
+                        help="Raw dimension of rPPG feature per utterance")
+    parser.add_argument("--rppg_proj_dim", type=int, default=460,
+                        help="Projection dimension for rPPG before fusion (aligns with other modalities)")
     
     # 梯度裁剪参数（用于防止梯度爆炸）
     parser.add_argument("--max_grad_norm", type=float, default=1.0,

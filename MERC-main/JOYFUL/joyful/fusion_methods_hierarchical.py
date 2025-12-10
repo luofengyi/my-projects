@@ -182,7 +182,8 @@ class AutoFusion_Hierarchical(nn.Module):
                  use_ulgm=False, num_classes=4, hidden_size=128, drop_rate=0.3,
                  class_weights=None, gate_reg_weight=0.01,
                  global_residual_alpha=0.3,
-                 ulgm_text_only=False, ulgm_weights=None, ulgm_class_config=None):
+                 ulgm_text_only=False, ulgm_weights=None, ulgm_class_config=None,
+                 use_rppg=False, rppg_raw_dim=64, rppg_proj_dim=460):
         """
         Args:
             input_features: 输入特征维度
@@ -193,6 +194,9 @@ class AutoFusion_Hierarchical(nn.Module):
             drop_rate: Dropout率
             class_weights: 单模态分类损失的类别权重（用于缓解类别不平衡）
             ulgm_class_config: ULGM类别特定配置（为Happy等少数类提供更保守策略）
+            use_rppg: 是否启用rPPG模态（面部信号提取的生理特征）
+            rppg_raw_dim: rPPG原始特征维度
+            rppg_proj_dim: rPPG投影维度（与其他模态保持一致，默认460）
         """
         super(AutoFusion_Hierarchical, self).__init__()
         self.input_features = input_features
@@ -202,6 +206,13 @@ class AutoFusion_Hierarchical(nn.Module):
         self.gate_reg_weight = gate_reg_weight
         self.global_residual_alpha = max(0.0, min(1.0, global_residual_alpha))
         self.ulgm_text_only = ulgm_text_only
+        self.use_rppg = use_rppg
+        self.rppg_raw_dim = rppg_raw_dim
+        self.rppg_proj_dim = rppg_proj_dim
+        # 投影维度（与历史实现保持一致）
+        self.proj_dim = 460
+        if self.use_rppg and self.rppg_proj_dim != self.proj_dim:
+            raise ValueError(f"rppg_proj_dim需要与其他模态一致（{self.proj_dim}），当前为{self.rppg_proj_dim}")
         if ulgm_weights is None:
             self.ulgm_weights = (1.0, 1.0, 1.0)  # text, audio, video
         else:
@@ -236,11 +247,16 @@ class AutoFusion_Hierarchical(nn.Module):
         self.criterion = nn.SmoothL1Loss() if use_smooth_l1 else nn.MSELoss()
 
         # 局部特征学习的投影层（保持不变）
-        self.projectA = nn.Linear(100, 460)
-        self.projectT = nn.Linear(768, 460)
-        self.projectV = nn.Linear(512, 460)
+        self.projectA = nn.Linear(100, self.proj_dim)
+        self.projectT = nn.Linear(768, self.proj_dim)
+        self.projectV = nn.Linear(512, self.proj_dim)
+        # rPPG投影（可选）：投影到与其他模态相同的维度，便于拼接
+        if self.use_rppg:
+            self.projectR = nn.Linear(self.rppg_raw_dim, self.proj_dim)
+        else:
+            self.projectR = None
         self.projectB = nn.Sequential(
-            nn.Linear(460, 460),
+            nn.Linear(self.proj_dim, self.proj_dim),
         )
         
         # ========== ULGM模块：单模态监督（可选） ==========
@@ -303,38 +319,65 @@ class AutoFusion_Hierarchical(nn.Module):
                 if layer.bias is not None:
                     nn.init.constant_(layer.bias, 0.0)
 
-    def forward(self, a, t, v, labels=None):
+    def forward(self, a, t, v, rppg=None, labels=None):
         """
         Args:
             a: 音频特征 [100]
             t: 文本特征 [768]
             v: 视觉特征 [512]
+            rppg: rPPG生理特征（可选）
             labels: 标签（可选，仅训练时需要，用于ULGM）
         Returns:
             output: 融合后的特征 [2, 512] (与原始AutoFusion保持一致)
             loss: 重构损失
             unimodal_loss: 单模态损失（仅训练时，如果启用ULGM，否则为None）
         """
-        # ========== 局部特征学习部分（保持不变） ==========
-        B = self.projectB(torch.ones(460, device=a.device))
-        A = self.projectA(a)
-        T = self.projectT(t)
-        V = self.projectV(v)
+        # 统一为float32，避免类型不一致
+        a = a.to(torch.float32)
+        t = t.to(torch.float32)
+        v = v.to(torch.float32)
+        if self.use_rppg:
+            if rppg is None:
+                rppg = torch.zeros(self.rppg_raw_dim, device=a.device)
+            else:
+                rppg = torch.as_tensor(rppg, dtype=torch.float32, device=a.device)
 
-        BA = torch.softmax(torch.mul((torch.unsqueeze(B, dim=1)), A), dim=1)
-        BT = torch.softmax(torch.mul((torch.unsqueeze(B, dim=1)), T), dim=1)
-        BV = torch.softmax(torch.mul((torch.unsqueeze(B, dim=1)), V), dim=1)
+        # ========== 局部特征学习部分（支持rPPG） ==========
+        B = self.projectB(torch.ones(self.proj_dim, device=a.device))
 
-        bba = torch.mm(BA, torch.unsqueeze(A, dim=1)).squeeze(1)
-        bbt = torch.mm(BT, torch.unsqueeze(T, dim=1)).squeeze(1)
-        bbv = torch.mm(BV, torch.unsqueeze(V, dim=1)).squeeze(1)
+        modal_projections = []
+        modal_weighted = []
 
-        interCompressed = self.fuse_inInter(torch.cat((bba, bbt, bbv)))
-        interLoss = self.criterion(self.fuse_outInter(interCompressed), torch.cat((bba, bbt, bbv)))
+        def _project_and_weight(feat, projector):
+            proj = projector(feat)
+            BA = torch.softmax(torch.mul((torch.unsqueeze(B, dim=1)), proj), dim=1)
+            weighted = torch.mm(BA, torch.unsqueeze(proj, dim=1)).squeeze(1)
+            return proj, weighted
+
+        A, bba = _project_and_weight(a, self.projectA)
+        T, bbt = _project_and_weight(t, self.projectT)
+        V, bbv = _project_and_weight(v, self.projectV)
+
+        modal_projections.extend([A, T, V])
+        modal_weighted.extend([bba, bbt, bbv])
+
+        if self.use_rppg and self.projectR is not None:
+            R, bbr = _project_and_weight(rppg, self.projectR)
+            modal_projections.append(R)
+            modal_weighted.append(bbr)
+
+        inter_input = torch.cat(modal_weighted)
+        interCompressed = self.fuse_inInter(inter_input)
+        interLoss = self.criterion(self.fuse_outInter(interCompressed), inter_input)
 
         # ========== 上下文融合部分（改进：添加层次化门控） ==========
-        # 拼接多模态特征
-        concat_features = torch.cat((a, t, v))  # [input_features]
+        # 拼接多模态特征（在统一投影空间）
+        concat_features = torch.cat(modal_projections)  # [input_features]
+        if concat_features.shape[0] != self.input_features:
+            raise ValueError(
+                f"concat_features dim {concat_features.shape[0]} != expected {self.input_features}. "
+                f"请检查rPPG配置与rppg_proj_dim是否匹配。"
+            )
         
         # 内层：话语级门控融合（替换原来的fuse_inGlobal）
         globalCompressed = self.utterance_gate(concat_features)  # [512]
