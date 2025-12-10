@@ -1,5 +1,5 @@
 """
-改进的AutoFusion - 集成层次化动态门控机制
+改进的AutoFusion - 集成层次化动态门控机制和ULGM伪标签生成
 只在上下文融合部分（fuse_inGlobal/fuse_outGlobal）进行修改
 保持所有维度不变
 """
@@ -9,6 +9,7 @@ from torch import nn
 from torch.nn import functional as F
 from joyful.loss_utils import create_reconstruction_loss
 import torch.nn.functional as F_nn
+from joyful.ulgm_module import ULGM
 
 
 class UtteranceLevelGate(nn.Module):
@@ -180,6 +181,7 @@ class AutoFusion_Hierarchical(nn.Module):
     def __init__(self, input_features, use_smooth_l1=False, 
                  use_ulgm=False, num_classes=4, hidden_size=128, drop_rate=0.3,
                  class_weights=None, gate_reg_weight=0.01,
+                 global_residual_alpha=0.3,
                  ulgm_text_only=False, ulgm_weights=None):
         """
         Args:
@@ -197,6 +199,7 @@ class AutoFusion_Hierarchical(nn.Module):
         self.use_ulgm = use_ulgm
         self.unimodal_class_weights = None
         self.gate_reg_weight = gate_reg_weight
+        self.global_residual_alpha = max(0.0, min(1.0, global_residual_alpha))
         self.ulgm_text_only = ulgm_text_only
         if ulgm_weights is None:
             self.ulgm_weights = (1.0, 1.0, 1.0)  # text, audio, video
@@ -208,6 +211,7 @@ class AutoFusion_Hierarchical(nn.Module):
         
         # 改进：外层对话级门控（替换原来的fuse_outGlobal）
         self.dialogue_gate = DialogueLevelGate(512, input_features)
+        self.raw_projection = nn.Linear(input_features, 512)
         
         # 全局情感状态（可学习参数，用于对话级门控）
         # 使用小标准差初始化，避免初始重构误差过大
@@ -240,15 +244,23 @@ class AutoFusion_Hierarchical(nn.Module):
         
         # ========== ULGM模块：单模态监督（可选） ==========
         if use_ulgm:
-            # 处理类别权重：如果提供则转为Tensor并缓存
-            if class_weights is not None:
-                if not isinstance(class_weights, torch.Tensor):
-                    class_weights = torch.tensor(class_weights, dtype=torch.float32, device=self.global_emotion_state.device)
-                else:
-                    class_weights = class_weights.to(self.global_emotion_state.device)
-                self.unimodal_class_weights = class_weights
+            # ULGM伪标签生成模块（非参数）
+            self.ulgm = ULGM(
+                num_classes=num_classes,
+                feature_dim=hidden_size,
+                momentum=0.9,
+                temp=1.0,
+                use_hard_labels=False  # 使用软标签，更稳定
+            )
             
-            # 单模态特征提取层
+            # 共享底层特征提取（硬共享策略）
+            # 多模态融合特征提取
+            self.post_fusion_dropout = nn.Dropout(drop_rate)
+            self.post_fusion_layer_1 = nn.Linear(input_features, hidden_size)
+            self.post_fusion_layer_2 = nn.Linear(hidden_size, hidden_size)
+            self.post_fusion_layer_3 = nn.Linear(hidden_size, num_classes)
+            
+            # 单模态特征提取层（共享底层表征）
             # 文本特征提取
             self.post_text_dropout = nn.Dropout(drop_rate)
             self.post_text_layer_1 = nn.Linear(768, hidden_size)
@@ -261,7 +273,7 @@ class AutoFusion_Hierarchical(nn.Module):
             self.post_video_dropout = nn.Dropout(drop_rate)
             self.post_video_layer_1 = nn.Linear(512, hidden_size)
             
-            # 单模态分类器
+            # 单模态分类器（接受ULGM生成的伪标签）
             # 文本分类器
             self.post_text_layer_2 = nn.Linear(hidden_size, hidden_size)
             self.post_text_layer_3 = nn.Linear(hidden_size, num_classes)
@@ -274,13 +286,17 @@ class AutoFusion_Hierarchical(nn.Module):
             self.post_video_layer_2 = nn.Linear(hidden_size, hidden_size)
             self.post_video_layer_3 = nn.Linear(hidden_size, num_classes)
             
-            # 单模态损失函数
-            self.unimodal_criterion = nn.NLLLoss(weight=self.unimodal_class_weights)
+            # 使用KL散度损失（适合软标签）+ 可选的类别权重
+            # 注意：KL散度不直接支持class_weights，我们在计算时手动加权
+            self.unimodal_class_weights = class_weights
             
             # 改进初始化：使用Xavier初始化，避免梯度爆炸
-            for layer in [self.post_text_layer_1, self.post_text_layer_2, self.post_text_layer_3,
-                          self.post_audio_layer_1, self.post_audio_layer_2, self.post_audio_layer_3,
-                          self.post_video_layer_1, self.post_video_layer_2, self.post_video_layer_3]:
+            for layer in [
+                self.post_fusion_layer_1, self.post_fusion_layer_2, self.post_fusion_layer_3,
+                self.post_text_layer_1, self.post_text_layer_2, self.post_text_layer_3,
+                self.post_audio_layer_1, self.post_audio_layer_2, self.post_audio_layer_3,
+                self.post_video_layer_1, self.post_video_layer_2, self.post_video_layer_3
+            ]:
                 nn.init.xavier_uniform_(layer.weight, gain=1.0)
                 if layer.bias is not None:
                     nn.init.constant_(layer.bias, 0.0)
@@ -320,11 +336,19 @@ class AutoFusion_Hierarchical(nn.Module):
         
         # 内层：话语级门控融合（替换原来的fuse_inGlobal）
         globalCompressed = self.utterance_gate(concat_features)  # [512]
+        raw_projected = self.raw_projection(concat_features)
+        if self.global_residual_alpha > 0:
+            globalHidden = (
+                (1.0 - self.global_residual_alpha) * globalCompressed
+                + self.global_residual_alpha * raw_projected
+            )
+        else:
+            globalHidden = globalCompressed
         
         # 外层：对话级门控重构（替换原来的fuse_outGlobal）
         # 使用全局情感状态作为上下文，同时返回门控值用于正则化
         globalReconstructed, gates = self.dialogue_gate(
-            globalCompressed, 
+            globalHidden, 
             self.global_emotion_state,
             return_gates=True
         )  # [input_features]
@@ -348,10 +372,7 @@ class AutoFusion_Hierarchical(nn.Module):
         loss = globalLoss + interLoss + gate_regularization
 
         # 输出格式保持与原始AutoFusion一致
-        # 原始：torch.cat((globalCompressed, interCompressed), 0)
-        # globalCompressed: [512], interCompressed: [512]
-        # cat后: [1024]
-        output = torch.cat((globalCompressed, interCompressed), 0)
+        output = torch.cat((globalHidden, interCompressed), 0)
         
         # ========== ULGM模块：单模态监督（仅训练时） ==========
         unimodal_loss = None
@@ -362,78 +383,125 @@ class AutoFusion_Hierarchical(nn.Module):
     
     def _compute_unimodal_loss(self, a, t, v, labels):
         """
-        计算单模态分类损失（ULGM模块）
+        计算单模态分类损失（使用ULGM生成的伪标签）
+        
+        流程：
+        1. 提取多模态融合特征和单模态特征
+        2. 使用ULGM生成单模态伪标签
+        3. 更新ULGM的类中心
+        4. 计算基于伪标签的损失
         
         Args:
             a: 音频特征 [100]
             t: 文本特征 [768]
             v: 视觉特征 [512]
-            labels: 标签（标量、单个值或tensor）
+            labels: 真实标签（标量、单个值或tensor）
         
         Returns:
             unimodal_loss: 单模态总损失（已归一化）
         """
         # 处理labels：确保是标量（0维tensor）
-        # label应该是单个utterance的标签（标量值）
         if isinstance(labels, torch.Tensor):
-            # 如果是tensor，转换为Python标量再转回tensor（确保是0维）
             if labels.dim() > 0:
                 label_value = labels.item() if labels.numel() == 1 else labels[0].item()
             else:
                 label_value = labels.item()
             label = torch.tensor(label_value, dtype=torch.long, device=a.device)
         else:
-            # 如果是Python标量，直接转换
             label = torch.tensor(int(labels), dtype=torch.long, device=a.device)
         
         # 确保label是标量（0维tensor）
         assert label.dim() == 0, f"Label should be scalar (0-dim), got shape {label.shape}"
         
-        # 文本特征提取和分类
+        # ========== 步骤1：特征提取 ==========
+        # 多模态融合特征
+        fusion_input = torch.cat([a, t, v], dim=-1)  # [input_features]
+        fusion_h = self.post_fusion_dropout(fusion_input)
+        fusion_h = F_nn.relu(self.post_fusion_layer_1(fusion_h), inplace=False)  # [hidden_size]
+        x_f = F_nn.relu(self.post_fusion_layer_2(fusion_h), inplace=False)
+        output_fusion = self.post_fusion_layer_3(x_f)  # [num_classes]
+        
+        # 单模态特征提取
+        # 文本
         text_h = self.post_text_dropout(t)
-        text_h = F_nn.relu(self.post_text_layer_1(text_h), inplace=False)
+        text_h = F_nn.relu(self.post_text_layer_1(text_h), inplace=False)  # [hidden_size]
+        
+        # 音频
+        audio_h = self.post_audio_dropout(a)
+        audio_h = F_nn.relu(self.post_audio_layer_1(audio_h), inplace=False)  # [hidden_size]
+        
+        # 视觉
+        video_h = self.post_video_dropout(v)
+        video_h = F_nn.relu(self.post_video_layer_1(video_h), inplace=False)  # [hidden_size]
+        
+        # ========== 步骤2：更新ULGM类中心 ==========
+        self.ulgm.update_centers(
+            multimodal_feat=fusion_h,
+            text_feat=text_h,
+            audio_feat=audio_h,
+            video_feat=video_h,
+            labels=label
+        )
+        
+        # ========== 步骤3：生成伪标签 ==========
+        # 文本伪标签
+        text_pseudo_label = self.ulgm.generate_text_pseudo_label(
+            multimodal_feat=fusion_h,
+            text_feat=text_h,
+            multimodal_logits=output_fusion,
+            true_label=label
+        )
+        
+        # 音频伪标签
+        audio_pseudo_label = self.ulgm.generate_audio_pseudo_label(
+            multimodal_feat=fusion_h,
+            audio_feat=audio_h,
+            multimodal_logits=output_fusion,
+            true_label=label
+        )
+        
+        # 视觉伪标签
+        video_pseudo_label = self.ulgm.generate_video_pseudo_label(
+            multimodal_feat=fusion_h,
+            video_feat=video_h,
+            multimodal_logits=output_fusion,
+            true_label=label
+        )
+        
+        # ========== 步骤4：单模态分类器输出 ==========
+        # 文本分类
         x_t = F_nn.relu(self.post_text_layer_2(text_h), inplace=False)
         output_text = self.post_text_layer_3(x_t)  # [num_classes]
         
-        # 确保output_text是1D的
-        if output_text.dim() > 1:
-            output_text = output_text.squeeze()
-        elif output_text.dim() == 0:
-            # 如果意外变成标量，需要重新处理
-            output_text = output_text.unsqueeze(0)
-        
-        # NLLLoss需要：[1, num_classes] 和 [1] 或 [num_classes] 和 标量
-        # 这里使用 [num_classes] 和 标量
-        text_log_prob = F_nn.log_softmax(output_text, dim=-1)  # [num_classes]
-        text_loss = self.unimodal_criterion(text_log_prob, label)
-        
-        # 音频特征提取和分类
-        audio_h = self.post_audio_dropout(a)
-        audio_h = F_nn.relu(self.post_audio_layer_1(audio_h), inplace=False)
+        # 音频分类
         x_a = F_nn.relu(self.post_audio_layer_2(audio_h), inplace=False)
         output_audio = self.post_audio_layer_3(x_a)  # [num_classes]
         
-        if output_audio.dim() > 1:
-            output_audio = output_audio.squeeze()
-        elif output_audio.dim() == 0:
-            output_audio = output_audio.unsqueeze(0)
-        
-        audio_log_prob = F_nn.log_softmax(output_audio, dim=-1)  # [num_classes]
-        audio_loss = self.unimodal_criterion(audio_log_prob, label)
-        
-        # 视觉特征提取和分类
-        video_h = self.post_video_dropout(v)
-        video_h = F_nn.relu(self.post_video_layer_1(video_h), inplace=False)
+        # 视觉分类
         x_v = F_nn.relu(self.post_video_layer_2(video_h), inplace=False)
         output_video = self.post_video_layer_3(x_v)  # [num_classes]
         
-        if output_video.dim() > 1:
-            output_video = output_video.squeeze()
-        elif output_video.dim() == 0:
-            output_video = output_video.unsqueeze(0)
+        # ========== 步骤5：计算损失（使用KL散度，适合软标签） ==========
+        # 将输出转为对数概率
+        log_prob_text = F_nn.log_softmax(output_text, dim=-1)
+        log_prob_audio = F_nn.log_softmax(output_audio, dim=-1)
+        log_prob_video = F_nn.log_softmax(output_video, dim=-1)
         
-        video_log_prob = F_nn.log_softmax(output_video, dim=-1)  # [num_classes]
-        video_loss = self.unimodal_criterion(video_log_prob, label)
+        # KL散度损失（target是伪标签概率分布）
+        # KL(P||Q) = sum(P * log(P/Q)) = sum(P * (log(P) - log(Q)))
+        # PyTorch的kl_div期望：input是log_prob，target是prob
+        text_loss = F_nn.kl_div(log_prob_text, text_pseudo_label, reduction='batchmean')
+        audio_loss = F_nn.kl_div(log_prob_audio, audio_pseudo_label, reduction='batchmean')
+        video_loss = F_nn.kl_div(log_prob_video, video_pseudo_label, reduction='batchmean')
+        
+        # 可选：应用类别权重（对损失加权）
+        if self.unimodal_class_weights is not None:
+            # 根据真实标签获取权重
+            label_idx = label.item()
+            weight = self.unimodal_class_weights[label_idx]
+            text_loss = text_loss * weight
+            audio_loss = audio_loss * weight
+            video_loss = video_loss * weight
         
         # 根据配置组合单模态损失
         if self.ulgm_text_only:

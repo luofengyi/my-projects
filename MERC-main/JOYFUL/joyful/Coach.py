@@ -69,6 +69,11 @@ class Coach:
             'test_f1s': [],
             'class_f1s': {}  # 每个类别的F1分数
         }
+        # ULGM权重调度参数
+        self.unimodal_init_weight = getattr(args, 'unimodal_init_weight', 0.0)
+        self.unimodal_target_weight = getattr(args, 'unimodal_loss_weight', 0.001)
+        self.unimodal_warmup_epochs = max(1, getattr(args, 'unimodal_warmup_epochs', 5))
+        self.unimodal_delay_epochs = max(0, getattr(args, 'unimodal_delay_epochs', 0))
 
     def load_ckpt(self, ckpt):
         print('')
@@ -162,6 +167,7 @@ class Coach:
         self.modelF.train()
 
         self.trainset.shuffle()
+        current_unimodal_weight = self._compute_unimodal_weight(epoch)
         for idx in tqdm(range(len(self.trainset)), desc="train epoch {}".format(epoch)):
             self.model.zero_grad()
             self.modelF.zero_grad()
@@ -176,15 +182,13 @@ class Coach:
             nll = self.model.get_loss(data, True) + encoder_loss_weight * encoderL.to(self.args.device)
             
             # 添加单模态损失（ULGM模块，如果存在）
-            if 'unimodal_loss' in data:
-                # 降低默认权重：从0.2降到0.01，避免单模态损失过大导致训练不稳定
-                unimodal_loss_weight = getattr(self.args, 'unimodal_loss_weight', 0.01)
+            if 'unimodal_loss' in data and current_unimodal_weight > 0:
                 unimodal_loss = data['unimodal_loss'].to(self.args.device)
                 # 确保单模态损失是标量
                 if isinstance(unimodal_loss, torch.Tensor):
                     if unimodal_loss.dim() > 0:
                         unimodal_loss = unimodal_loss.mean()
-                nll = nll + unimodal_loss_weight * unimodal_loss
+                nll = nll + current_unimodal_weight * unimodal_loss
             
             epoch_loss += nll.item()
             nll.backward()
@@ -207,6 +211,18 @@ class Coach:
             % (epoch, epoch_loss, train_f1, end_time - start_time)
         )
         return epoch_loss, train_f1
+    
+    def _compute_unimodal_weight(self, epoch):
+        """
+        根据当前epoch计算ULGM损失权重，先延迟、再线性升至目标权重。
+        """
+        if self.unimodal_target_weight <= 0:
+            return 0.0
+        if epoch <= self.unimodal_delay_epochs:
+            return self.unimodal_init_weight
+        progress_epoch = epoch - self.unimodal_delay_epochs
+        progress = min(1.0, progress_epoch / self.unimodal_warmup_epochs)
+        return self.unimodal_init_weight + (self.unimodal_target_weight - self.unimodal_init_weight) * progress
     
     def evaluate_train_set(self):
         """评估训练集，计算F1分数"""

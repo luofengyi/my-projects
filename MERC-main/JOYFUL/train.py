@@ -48,7 +48,22 @@ def get_ulgm_class_weights(args):
     weights = dataset_weights.get(args.dataset)
     if weights is None:
         return None
-    return torch.tensor(weights, dtype=torch.float32, device=args.device)
+    weight_tensor = torch.tensor(weights, dtype=torch.float32, device=args.device)
+    min_ratio = getattr(args, "ulgm_rebalance_min_ratio", 0.4)
+    max_ratio = getattr(args, "ulgm_rebalance_max_ratio", 2.5)
+    return rebalance_class_weights(weight_tensor, min_ratio, max_ratio)
+
+
+def rebalance_class_weights(weight_tensor, min_ratio=0.4, max_ratio=2.5, eps=1e-8):
+    """
+    对类别权重做再平衡，避免极端比值导致训练不稳定。
+    将权重归一化到均值为1，再根据给定区间裁剪后重新归一化。
+    """
+    if weight_tensor is None:
+        return None
+    normalized = weight_tensor / (weight_tensor.mean() + eps)
+    clamped = torch.clamp(normalized, min_ratio, max_ratio)
+    return clamped / (clamped.mean() + eps)
 
 
 def func(experiment, trainset, devset, testset, model, opt, sched, args):
@@ -111,6 +126,52 @@ def main(args):
     data = joyful.utils.load_pkl(args.data)
     log.info("Loaded data.")
 
+    # 如果启用了自动类别权重，基于训练集统计标签分布并生成权重
+    if getattr(args, 'auto_class_weight', False):
+        import torch as _torch
+
+        # 收集所有utterance级别的标签（样本中可能包含多条utterance）
+        all_labels = []
+        for s in data.get('train', []):
+            # s.label 可能是列表/序列
+            try:
+                all_labels.extend(list(s.label))
+            except Exception:
+                # 兼容不同数据结构
+                continue
+
+        if len(all_labels) == 0:
+            log.warning("No labels found in training data; skipping auto class weight computation.")
+        else:
+            # 处理整数标签或字符串标签
+            if all(isinstance(x, int) for x in all_labels):
+                num_classes = max(all_labels) + 1
+                counts = [0] * num_classes
+                for l in all_labels:
+                    counts[l] += 1
+            else:
+                unique = sorted(list(set(all_labels)))
+                label_to_idx = {lab: i for i, lab in enumerate(unique)}
+                num_classes = len(unique)
+                counts = [0] * num_classes
+                for l in all_labels:
+                    counts[label_to_idx[l]] += 1
+
+            total = float(sum(counts))
+            freqs = [c / total for c in counts]
+            # 防止除零
+            weights = [1.0 / (f + 1e-8) for f in freqs]
+            weight_tensor = _torch.tensor(weights, dtype=_torch.float32, device=args.device)
+
+            # 进行再平衡，避免极端比值
+            weight_tensor = rebalance_class_weights(
+                weight_tensor, min_ratio=args.rebalance_min_ratio, max_ratio=args.rebalance_max_ratio
+            )
+
+            args.class_weight = True
+            args.class_weights_tensor = weight_tensor
+            log.info(f"Auto class weights computed and applied: {weight_tensor.cpu().numpy()}")
+
     # 计算input_features: use raw concatenated modality sizes for the fusion module
     # keep args.dataset_embedding_dims as the final fused embedding size used later
     input_features = args.dataset_raw_dims[args.dataset][args.modalities]
@@ -145,6 +206,8 @@ def main(args):
             hidden_size=args.ulgm_hidden_size,
             drop_rate=args.ulgm_drop_rate,
             class_weights=ulgm_class_weights,
+            gate_reg_weight=args.gate_reg_weight,
+            global_residual_alpha=args.global_residual_alpha,
             ulgm_text_only=args.ulgm_text_only,
             ulgm_weights=(
                 args.ulgm_text_weight,
@@ -252,6 +315,8 @@ if __name__ == "__main__":
                         help="Use SmoothL1Loss instead of MSELoss for reconstruction (recommended)")
     parser.add_argument("--gate_reg_weight", type=float, default=0.01,
                         help="Weight for gate regularization (only for hierarchical fusion)")
+    parser.add_argument("--global_residual_alpha", type=float, default=0.3,
+                        help="Blend ratio for skip connection from raw concat features back into hierarchical global output (0 disables residual)")
     
     # 层次化融合选项
     parser.add_argument("--use_hierarchical_fusion", action="store_true", default=False,
@@ -280,6 +345,10 @@ if __name__ == "__main__":
                         help="Weight for audio loss inside ULGM when not text-only")
     parser.add_argument("--ulgm_video_weight", type=float, default=0.5,
                         help="Weight for video loss inside ULGM when not text-only")
+    parser.add_argument("--ulgm_rebalance_min_ratio", type=float, default=0.4,
+                        help="Lower bound for normalized ULGM class weights (prevents extreme ratios)")
+    parser.add_argument("--ulgm_rebalance_max_ratio", type=float, default=2.5,
+                        help="Upper bound for normalized ULGM class weights")
     
     # 梯度裁剪参数（用于防止梯度爆炸）
     parser.add_argument("--max_grad_norm", type=float, default=1.0,
@@ -326,6 +395,24 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="Use class weights in nll loss.",
+    )
+    parser.add_argument(
+        "--auto_class_weight",
+        action="store_true",
+        default=False,
+        help="Automatically compute class weights from training data and use them.",
+    )
+    parser.add_argument(
+        "--rebalance_min_ratio",
+        type=float,
+        default=0.4,
+        help="Lower bound for normalized class weight ratio when auto computing weights.",
+    )
+    parser.add_argument(
+        "--rebalance_max_ratio",
+        type=float,
+        default=2.5,
+        help="Upper bound for normalized class weight ratio when auto computing weights.",
     )
     parser.add_argument(
         "--encoding",
