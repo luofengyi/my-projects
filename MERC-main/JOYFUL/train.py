@@ -126,6 +126,52 @@ def main(args):
     data = joyful.utils.load_pkl(args.data)
     log.info("Loaded data.")
 
+    # 如果启用了自动类别权重，基于训练集统计标签分布并生成权重
+    if getattr(args, 'auto_class_weight', False):
+        import torch as _torch
+
+        # 收集所有utterance级别的标签（样本中可能包含多条utterance）
+        all_labels = []
+        for s in data.get('train', []):
+            # s.label 可能是列表/序列
+            try:
+                all_labels.extend(list(s.label))
+            except Exception:
+                # 兼容不同数据结构
+                continue
+
+        if len(all_labels) == 0:
+            log.warning("No labels found in training data; skipping auto class weight computation.")
+        else:
+            # 处理整数标签或字符串标签
+            if all(isinstance(x, int) for x in all_labels):
+                num_classes = max(all_labels) + 1
+                counts = [0] * num_classes
+                for l in all_labels:
+                    counts[l] += 1
+            else:
+                unique = sorted(list(set(all_labels)))
+                label_to_idx = {lab: i for i, lab in enumerate(unique)}
+                num_classes = len(unique)
+                counts = [0] * num_classes
+                for l in all_labels:
+                    counts[label_to_idx[l]] += 1
+
+            total = float(sum(counts))
+            freqs = [c / total for c in counts]
+            # 防止除零
+            weights = [1.0 / (f + 1e-8) for f in freqs]
+            weight_tensor = _torch.tensor(weights, dtype=_torch.float32, device=args.device)
+
+            # 进行再平衡，避免极端比值
+            weight_tensor = rebalance_class_weights(
+                weight_tensor, min_ratio=args.rebalance_min_ratio, max_ratio=args.rebalance_max_ratio
+            )
+
+            args.class_weight = True
+            args.class_weights_tensor = weight_tensor
+            log.info(f"Auto class weights computed and applied: {weight_tensor.cpu().numpy()}")
+
     # 计算input_features: use raw concatenated modality sizes for the fusion module
     # keep args.dataset_embedding_dims as the final fused embedding size used later
     input_features = args.dataset_raw_dims[args.dataset][args.modalities]
@@ -293,8 +339,8 @@ if __name__ == "__main__":
     # ULGM模块参数（单模态监督）
     parser.add_argument("--use_ulgm", action="store_true", default=False,
                         help="Use ULGM module for unimodal supervision")
-    parser.add_argument("--unimodal_loss_weight", type=float, default=0.0005,
-                        help="Target weight for ULGM loss after warmup (recommended: 0.0002-0.001 for stability)")
+    parser.add_argument("--unimodal_loss_weight", type=float, default=0.002,
+                        help="Target weight for ULGM loss after warmup (e.g., 0.0005-0.005)")
     parser.add_argument("--unimodal_init_weight", type=float, default=0.0,
                         help="Initial ULGM weight before warmup (0 keeps ULGM off early)")
     parser.add_argument("--unimodal_warmup_epochs", type=int, default=15,
@@ -367,6 +413,24 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="Use class weights in nll loss.",
+    )
+    parser.add_argument(
+        "--auto_class_weight",
+        action="store_true",
+        default=False,
+        help="Automatically compute class weights from training data and use them.",
+    )
+    parser.add_argument(
+        "--rebalance_min_ratio",
+        type=float,
+        default=0.4,
+        help="Lower bound for normalized class weight ratio when auto computing weights.",
+    )
+    parser.add_argument(
+        "--rebalance_max_ratio",
+        type=float,
+        default=2.5,
+        help="Upper bound for normalized class weight ratio when auto computing weights.",
     )
     parser.add_argument(
         "--encoding",

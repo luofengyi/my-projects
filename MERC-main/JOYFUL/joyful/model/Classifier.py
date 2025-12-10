@@ -24,95 +24,99 @@ class Classifier(nn.Module):
         self.lin_7 = nn.Linear(hidden_size, 7)
         self.linear = nn.Linear(input_dim, tag_size)
         if args.class_weight:
-            if args.dataset == "iemocap":
-                self.loss_weights = torch.tensor(
-                    [
-                        1 / 0.086747,
-                        1 / 0.144406,
-                        1 / 0.157883,
-                        1 / 0.160585,
-                        1 / 0.127711,
-                        1 / 0.182668,
-                    ]
-                ).to(args.device)
-            elif args.dataset == "iemocap_4":
-                self.loss_weights = torch.tensor(
-                    [
-                        1 / 0.1426370239929562,
-                        1 / 0.2386088487783403,
-                        1 / 0.37596302003081666,
-                        1 / 0.24279110719788685,
-                    ]
-                ).to(args.device)
-            elif args.dataset == "meld":
-                self.loss_weights = torch.tensor(
-                    [
-                        1 / 0.286747,
-                        1 / 0.144406,
-                        1 / 0.157883,
-                        1 / 0.05085,
-                        1 / 0.187711,
-                        1 / 0.182668,
-                        1 / 0.182668
-                    ]
-                ).to(args.device)
-            elif args.dataset == "mosei":
-                if args.emotion == "happiness":
-                    self.loss_weights = torch.tensor(
-                        [1 / 0.4717985331342896, 1 / 0.5282014668657103]
-                    ).to(args.device)
-                elif args.emotion == "anger":
-                    self.loss_weights = torch.tensor(
-                        [1 / 0.7796456156292594, 1 / 0.22035438437074056]
-                    ).to(args.device)
-                elif args.emotion == "disgust":
-                    self.loss_weights = torch.tensor(
-                        [1 / 0.8083987797754267, 1 / 0.19160122022457324]
-                    ).to(args.device)
-                elif args.emotion == "fear":
-                    self.loss_weights = torch.tensor(
-                        [1 / 0.8083987797754267, 1 / 0.19160122022457324]
-                    ).to(args.device)
-                elif args.emotion == "surprise":
-                    self.loss_weights = torch.tensor(
-                        [1 / 0.9220484195495554, 1 / 0.0779515804504446]
-                    ).to(args.device)
-                elif args.emotion == "sadness":
-                    self.loss_weights = torch.tensor(
-                        [1 / 0.7288894658272214, 1 / 0.2711105341727786]
-                    ).to(args.device)
-                elif args.emotion == "2class":
-                    self.loss_weights = torch.tensor(
-                        [3.445241612154463, 1.4089575422851226]
-                    ).to(args.device)
-                elif args.emotion == "7class":
+            # 如果外部提供了预计算的class_weights_tensor（例如通过 --auto_class_weight），优先使用
+            if hasattr(args, 'class_weights_tensor') and getattr(args, 'class_weights_tensor') is not None:
+                self.loss_weights = args.class_weights_tensor.to(args.device)
+            else:
+                if args.dataset == "iemocap":
                     self.loss_weights = torch.tensor(
                         [
-                            26.63458401305057,
-                            10.307449494949495,
-                            6.422895357985838,
-                            4.614754098360656,
-                            3.0869729627528835,
-                            7.237145390070922,
-                            32.33069306930693,
+                            1 / 0.086747,
+                            1 / 0.144406,
+                            1 / 0.157883,
+                            1 / 0.160585,
+                            1 / 0.127711,
+                            1 / 0.182668,
                         ]
                     ).to(args.device)
-                elif args.emotion == "multilabel":
+                elif args.dataset == "iemocap_4":
                     self.loss_weights = torch.tensor(
                         [
-                            1 / 0.5356517935258093,
-                            1 / 0.2588801399825022,
-                            1 / 0.2158792650918635,
-                            1 / 0.08276465441819772,
-                            1 / 0.1767716535433071,
-                            1 / 0.1,
+                            1 / 0.1426370239929562,
+                            1 / 0.2386088487783403,
+                            1 / 0.37596302003081666,
+                            1 / 0.24279110719788685,
                         ]
                     ).to(args.device)
-                    self.bce_loss = nn.BCEWithLogitsLoss(reduction="sum")
-                else:
+                elif args.dataset == "meld":
                     self.loss_weights = torch.tensor(
-                        [1 / 0.303032097595, 1 / 0.696967902404]
+                        [
+                            1 / 0.286747,
+                            1 / 0.144406,
+                            1 / 0.157883,
+                            1 / 0.05085,
+                            1 / 0.187711,
+                            1 / 0.182668,
+                            1 / 0.182668,
+                        ]
                     ).to(args.device)
+                elif args.dataset == "mosei":
+                    if args.emotion == "happiness":
+                        self.loss_weights = torch.tensor(
+                            [1 / 0.4717985331342896, 1 / 0.5282014668657103]
+                        ).to(args.device)
+                    elif args.emotion == "anger":
+                        self.loss_weights = torch.tensor(
+                            [1 / 0.7796456156292594, 1 / 0.22035438437074056]
+                        ).to(args.device)
+                    elif args.emotion == "disgust":
+                        self.loss_weights = torch.tensor(
+                            [1 / 0.8083987797754267, 1 / 0.19160122022457324]
+                        ).to(args.device)
+                    elif args.emotion == "fear":
+                        self.loss_weights = torch.tensor(
+                            [1 / 0.8083987797754267, 1 / 0.19160122022457324]
+                        ).to(args.device)
+                    elif args.emotion == "surprise":
+                        self.loss_weights = torch.tensor(
+                            [1 / 0.9220484195495554, 1 / 0.0779515804504446]
+                        ).to(args.device)
+                    elif args.emotion == "sadness":
+                        self.loss_weights = torch.tensor(
+                            [1 / 0.7288894658272214, 1 / 0.2711105341727786]
+                        ).to(args.device)
+                    elif args.emotion == "2class":
+                        self.loss_weights = torch.tensor(
+                            [3.445241612154463, 1.4089575422851226]
+                        ).to(args.device)
+                    elif args.emotion == "7class":
+                        self.loss_weights = torch.tensor(
+                            [
+                                26.63458401305057,
+                                10.307449494949495,
+                                6.422895357985838,
+                                4.614754098360656,
+                                3.0869729627528835,
+                                7.237145390070922,
+                                32.33069306930693,
+                            ]
+                        ).to(args.device)
+                    elif args.emotion == "multilabel":
+                        self.loss_weights = torch.tensor(
+                            [
+                                1 / 0.5356517935258093,
+                                1 / 0.2588801399825022,
+                                1 / 0.2158792650918635,
+                                1 / 0.08276465441819772,
+                                1 / 0.1767716535433071,
+                                1 / 0.1,
+                            ]
+                        ).to(args.device)
+                        self.bce_loss = nn.BCEWithLogitsLoss(reduction="sum")
+                    else:
+                        self.loss_weights = torch.tensor(
+                            [1 / 0.303032097595, 1 / 0.696967902404]
+                        ).to(args.device)
 
             self.nll_loss = nn.NLLLoss(self.loss_weights)
             print("*******weighted loss*******")
