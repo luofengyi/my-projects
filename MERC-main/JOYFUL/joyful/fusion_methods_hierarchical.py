@@ -181,7 +181,7 @@ class AutoFusion_Hierarchical(nn.Module):
     def __init__(self, input_features, use_smooth_l1=False, 
                  use_ulgm=False, num_classes=4, hidden_size=128, drop_rate=0.3,
                  class_weights=None, gate_reg_weight=0.01,
-                 global_residual_alpha=0.3,
+                 global_residual_alpha=0.3, fusion_recon_weight=0.1,
                  ulgm_text_only=False, ulgm_weights=None, ulgm_class_config=None,
                  use_rppg=False, rppg_raw_dim=64, rppg_proj_dim=460):
         """
@@ -204,6 +204,7 @@ class AutoFusion_Hierarchical(nn.Module):
         self.use_ulgm = use_ulgm
         self.unimodal_class_weights = None
         self.gate_reg_weight = gate_reg_weight
+        self.fusion_recon_weight = fusion_recon_weight
         self.global_residual_alpha = max(0.0, min(1.0, global_residual_alpha))
         self.ulgm_text_only = ulgm_text_only
         self.use_rppg = use_rppg
@@ -414,7 +415,9 @@ class AutoFusion_Hierarchical(nn.Module):
             gate_regularization = globalLoss.new_tensor(0.0)
 
         # 总损失：重构损失 + 门控正则化
-        loss = globalLoss + interLoss + gate_regularization
+        # 为避免初期损失过大，引入可配置缩放系数 fusion_recon_weight
+        recon_loss = (globalLoss + interLoss) * self.fusion_recon_weight
+        loss = recon_loss + gate_regularization
 
         # 输出格式保持与原始AutoFusion一致
         output = torch.cat((globalHidden, interCompressed), 0)
