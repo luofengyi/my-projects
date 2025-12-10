@@ -19,7 +19,7 @@ class ULGM(nn.Module):
     """
     
     def __init__(self, num_classes=4, feature_dim=128, momentum=0.9, 
-                 temp=1.0, use_hard_labels=False):
+                 temp=1.0, use_hard_labels=False, class_specific_config=None):
         """
         Args:
             num_classes: 情感类别数量
@@ -27,6 +27,7 @@ class ULGM(nn.Module):
             momentum: 类中心更新的动量（EMA）
             temp: 软标签温度系数（越小越接近硬标签）
             use_hard_labels: 是否使用硬标签（False则使用软标签，更稳定）
+            class_specific_config: 类别特定配置（为Happy等少数类提供更保守策略）
         """
         super(ULGM, self).__init__()
         self.num_classes = num_classes
@@ -34,6 +35,17 @@ class ULGM(nn.Module):
         self.momentum = momentum
         self.temp = temp
         self.use_hard_labels = use_hard_labels
+        
+        # 类别特定配置（默认配置：happy=0对应更保守策略）
+        if class_specific_config is None:
+            self.class_specific_config = {
+                0: {'min_samples': 20, 'true_label_weight': 0.5},  # Happy：需要更多样本，保留更多真实标签
+                1: {'min_samples': 10, 'true_label_weight': 0.3},  # Sad
+                2: {'min_samples': 10, 'true_label_weight': 0.3},  # Neutral
+                3: {'min_samples': 10, 'true_label_weight': 0.3},  # Angry
+            }
+        else:
+            self.class_specific_config = class_specific_config
         
         # 类中心：使用buffer而非parameter，避免被优化器更新
         # 初始化为零向量，训练中逐步更新
@@ -128,16 +140,15 @@ class ULGM(nn.Module):
     
     def generate_pseudo_label(self, multimodal_feat, unimodal_feat, 
                              multimodal_logits, true_label, 
-                             confidence_threshold=0.5):
+                             confidence_threshold=0.5, modality_name='text'):
         """
-        基于相对距离生成单模态伪标签
+        基于相对距离生成单模态伪标签（类别特定策略）
         
         策略：
         1. 如果类中心未充分初始化，返回真实标签（稳定早期训练）
-        2. 计算多模态和单模态特征到各类中心的相对距离
-        3. 基于多模态预测置信度决定伪标签生成策略：
-           - 高置信度：更多依赖多模态预测
-           - 低置信度：更多依赖真实标签
+        2. Happy等少数类使用更保守的融合策略（更多保留真实标签）
+        3. 计算多模态和单模态特征到各类中心的相对距离
+        4. 基于多模态预测置信度决定伪标签生成策略
         
         Args:
             multimodal_feat: 多模态特征 [feature_dim]
@@ -145,17 +156,36 @@ class ULGM(nn.Module):
             multimodal_logits: 多模态分类器输出 [num_classes]
             true_label: 真实标签（标量）
             confidence_threshold: 置信度阈值
+            modality_name: 模态名称（用于选择类中心）
         
         Returns:
             pseudo_label: 伪标签（软标签 [num_classes] 或硬标签 标量）
         """
+        label_idx = true_label.item() if true_label.dim() > 0 else int(true_label)
+        
+        # 获取该类别的特定配置
+        class_config = self.class_specific_config.get(
+            label_idx, 
+            {'min_samples': 10, 'true_label_weight': 0.3}
+        )
+        min_samples = class_config['min_samples']
+        true_label_base_weight = class_config['true_label_weight']
+        
+        # 如果该类样本数不足，直接返回真实标签
+        if self.class_counts[label_idx] < min_samples:
+            if self.use_hard_labels:
+                return true_label
+            else:
+                soft_label = torch.zeros(self.num_classes, device=multimodal_feat.device)
+                soft_label[label_idx] = 1.0
+                return soft_label
+        
         # 如果类中心未初始化，直接返回真实标签（软标签形式）
         if not self.centers_initialized:
             if self.use_hard_labels:
                 return true_label
             else:
                 # 返回one-hot软标签
-                label_idx = true_label.item() if true_label.dim() > 0 else int(true_label)
                 soft_label = torch.zeros(self.num_classes, device=multimodal_feat.device)
                 soft_label[label_idx] = 1.0
                 return soft_label
@@ -165,49 +195,62 @@ class ULGM(nn.Module):
             multimodal_probs = F.softmax(multimodal_logits / self.temp, dim=-1)
             confidence = multimodal_probs.max().item()
             
+            # 选择对应模态的类中心
+            if modality_name == 'text':
+                unimodal_centers = self.text_centers
+            elif modality_name == 'audio':
+                unimodal_centers = self.audio_centers
+            elif modality_name == 'video':
+                unimodal_centers = self.video_centers
+            else:
+                unimodal_centers = self.text_centers
+            
             # 计算多模态和单模态特征到类中心的相对距离
-            # 距离越小，相似度越高
             multimodal_rel_dist = self.compute_relative_distance(
                 multimodal_feat, self.multimodal_centers
             )
             unimodal_rel_dist = self.compute_relative_distance(
-                unimodal_feat, 
-                self.text_centers  # 这里应根据模态类型选择相应的centers
+                unimodal_feat, unimodal_centers
             )
             
-            # 基于相对距离差异生成伪标签
-            # 策略：如果单模态距离分布与多模态相似，则信任多模态预测
-            # 否则，调整为更接近真实标签
-            
-            # 计算偏移：单模态距离 - 多模态距离
-            # 正值表示单模态特征离该类更远
-            distance_offset = unimodal_rel_dist - multimodal_rel_dist
-            
             # 生成软伪标签：反转距离得到相似度分数
-            # 距离越小，分数越高
             similarity_scores = 1.0 / (unimodal_rel_dist + 1e-8)
             pseudo_probs = F.softmax(similarity_scores / self.temp, dim=-1)
             
-            # 融合策略：根据多模态置信度调整伪标签
+            # 准备真实标签的one-hot编码
+            true_label_onehot = torch.zeros(self.num_classes, device=multimodal_feat.device)
+            true_label_onehot[label_idx] = 1.0
+            
+            # 类别特定的融合策略
+            # Happy等少数类：保留更多真实标签，减少对不稳定预测的依赖
             if confidence > confidence_threshold:
-                # 高置信度：更多依赖多模态预测
-                pseudo_label_soft = 0.7 * multimodal_probs + 0.3 * pseudo_probs
+                # 高置信度：更多依赖多模态预测，但Happy类仍保留更多真实标签
+                distance_weight = 0.2
+                multimodal_weight = 0.8 - true_label_base_weight
+                true_label_weight = true_label_base_weight
             else:
-                # 低置信度：更多依赖距离计算，并加入真实标签的引导
-                label_idx = true_label.item() if true_label.dim() > 0 else int(true_label)
-                true_label_onehot = torch.zeros(self.num_classes, device=multimodal_feat.device)
-                true_label_onehot[label_idx] = 1.0
-                
-                # 三者混合
-                pseudo_label_soft = (0.4 * pseudo_probs + 
-                                   0.3 * multimodal_probs + 
-                                   0.3 * true_label_onehot)
+                # 低置信度：大幅增加真实标签权重，尤其是Happy类
+                distance_weight = 0.3
+                multimodal_weight = 0.7 - true_label_base_weight * 1.5
+                true_label_weight = true_label_base_weight * 1.5
+            
+            # 确保权重和为1
+            total_weight = distance_weight + multimodal_weight + true_label_weight
+            distance_weight /= total_weight
+            multimodal_weight /= total_weight
+            true_label_weight /= total_weight
+            
+            # 融合生成伪标签
+            pseudo_label_soft = (
+                distance_weight * pseudo_probs + 
+                multimodal_weight * multimodal_probs + 
+                true_label_weight * true_label_onehot
+            )
             
             # 归一化
-            pseudo_label_soft = pseudo_label_soft / pseudo_label_soft.sum()
+            pseudo_label_soft = pseudo_label_soft / (pseudo_label_soft.sum() + 1e-8)
             
             if self.use_hard_labels:
-                # 转换为硬标签
                 return pseudo_label_soft.argmax()
             else:
                 return pseudo_label_soft
@@ -215,23 +258,24 @@ class ULGM(nn.Module):
     def generate_text_pseudo_label(self, multimodal_feat, text_feat, 
                                    multimodal_logits, true_label, **kwargs):
         """为文本模态生成伪标签"""
-        # 临时替换中心用于距离计算
-        original_centers = self.text_centers
         return self.generate_pseudo_label(
-            multimodal_feat, text_feat, multimodal_logits, true_label, **kwargs
+            multimodal_feat, text_feat, multimodal_logits, true_label, 
+            modality_name='text', **kwargs
         )
     
     def generate_audio_pseudo_label(self, multimodal_feat, audio_feat, 
                                     multimodal_logits, true_label, **kwargs):
         """为音频模态生成伪标签"""
         return self.generate_pseudo_label(
-            multimodal_feat, audio_feat, multimodal_logits, true_label, **kwargs
+            multimodal_feat, audio_feat, multimodal_logits, true_label, 
+            modality_name='audio', **kwargs
         )
     
     def generate_video_pseudo_label(self, multimodal_feat, video_feat, 
                                     multimodal_logits, true_label, **kwargs):
         """为视觉模态生成伪标签"""
         return self.generate_pseudo_label(
-            multimodal_feat, video_feat, multimodal_logits, true_label, **kwargs
+            multimodal_feat, video_feat, multimodal_logits, true_label, 
+            modality_name='video', **kwargs
         )
 

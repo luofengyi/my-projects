@@ -182,7 +182,7 @@ class AutoFusion_Hierarchical(nn.Module):
                  use_ulgm=False, num_classes=4, hidden_size=128, drop_rate=0.3,
                  class_weights=None, gate_reg_weight=0.01,
                  global_residual_alpha=0.3,
-                 ulgm_text_only=False, ulgm_weights=None):
+                 ulgm_text_only=False, ulgm_weights=None, ulgm_class_config=None):
         """
         Args:
             input_features: 输入特征维度
@@ -192,6 +192,7 @@ class AutoFusion_Hierarchical(nn.Module):
             hidden_size: 单模态特征提取的隐藏层维度
             drop_rate: Dropout率
             class_weights: 单模态分类损失的类别权重（用于缓解类别不平衡）
+            ulgm_class_config: ULGM类别特定配置（为Happy等少数类提供更保守策略）
         """
         super(AutoFusion_Hierarchical, self).__init__()
         self.input_features = input_features
@@ -250,7 +251,8 @@ class AutoFusion_Hierarchical(nn.Module):
                 feature_dim=hidden_size,
                 momentum=0.9,
                 temp=1.0,
-                use_hard_labels=False  # 使用软标签，更稳定
+                use_hard_labels=False,  # 使用软标签，更稳定
+                class_specific_config=ulgm_class_config  # Happy类特定策略
             )
             
             # 共享底层特征提取（硬共享策略）
