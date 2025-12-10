@@ -212,9 +212,16 @@ class ULGM(nn.Module):
             unimodal_rel_dist = self.compute_relative_distance(
                 unimodal_feat, unimodal_centers
             )
-            
+
+            # 数值稳定性保护：避免出现精确的0导致倒数或softmax不稳定
+            eps = 1e-8
+            multimodal_rel_dist = torch.clamp(multimodal_rel_dist, min=eps)
+            unimodal_rel_dist = torch.clamp(unimodal_rel_dist, min=eps)
+
             # 生成软伪标签：反转距离得到相似度分数
-            similarity_scores = 1.0 / (unimodal_rel_dist + 1e-8)
+            similarity_scores = 1.0 / (unimodal_rel_dist + eps)
+            # 裁剪相似度，防止softmax溢出
+            similarity_scores = torch.clamp(similarity_scores, max=1e6)
             pseudo_probs = F.softmax(similarity_scores / self.temp, dim=-1)
             
             # 准备真实标签的one-hot编码
@@ -247,8 +254,9 @@ class ULGM(nn.Module):
                 true_label_weight * true_label_onehot
             )
             
-            # 归一化
-            pseudo_label_soft = pseudo_label_soft / (pseudo_label_soft.sum() + 1e-8)
+            # 归一化并防止出现0概率，保证后续KL/交叉熵稳定
+            pseudo_label_soft = pseudo_label_soft.clamp(min=1e-6)
+            pseudo_label_soft = pseudo_label_soft / (pseudo_label_soft.sum() + eps)
             
             if self.use_hard_labels:
                 return pseudo_label_soft.argmax()

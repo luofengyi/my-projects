@@ -422,11 +422,16 @@ class AutoFusion_Hierarchical(nn.Module):
         # ========== ULGM模块：单模态监督（仅训练时） ==========
         unimodal_loss = None
         if self.use_ulgm and self.training and labels is not None:
-            unimodal_loss = self._compute_unimodal_loss(a, t, v, labels)
+            # pass rppg through so unimodal loss can build fused input with the
+            # same projected dimensions used elsewhere (avoid dim mismatch)
+            if self.use_rppg:
+                unimodal_loss = self._compute_unimodal_loss(a, t, v, labels, rppg=rppg)
+            else:
+                unimodal_loss = self._compute_unimodal_loss(a, t, v, labels)
         
         return output, loss, unimodal_loss
     
-    def _compute_unimodal_loss(self, a, t, v, labels):
+    def _compute_unimodal_loss(self, a, t, v, labels, rppg=None):
         """
         计算单模态分类损失（使用ULGM生成的伪标签）
         
@@ -459,10 +464,24 @@ class AutoFusion_Hierarchical(nn.Module):
         assert label.dim() == 0, f"Label should be scalar (0-dim), got shape {label.shape}"
         
         # ========== 步骤1：特征提取 ==========
-        # 多模态融合特征
-        fusion_input = torch.cat([a, t, v], dim=-1)  # [input_features]
-        fusion_h = self.post_fusion_dropout(fusion_input)
-        fusion_h = F_nn.relu(self.post_fusion_layer_1(fusion_h), inplace=False)  # [hidden_size]
+        # 为避免与模型其他部分的维度不一致，这里使用与全局融合相同的投影空间
+        # 对原始模态做投影（projectA/T/V 会把各模态映射到 self.proj_dim）
+        A_proj = self.post_fusion_dropout(self.projectA(a))
+        T_proj = self.post_fusion_dropout(self.projectT(t))
+        V_proj = self.post_fusion_dropout(self.projectV(v))
+
+        proj_list = [A_proj, T_proj, V_proj]
+        if self.use_rppg:
+            if rppg is None:
+                # 如果外部未提供 rppg，则使用零向量投影保持维度一致
+                rppg_tensor = torch.zeros(self.rppg_raw_dim, device=a.device)
+            else:
+                rppg_tensor = rppg
+            R_proj = self.post_fusion_dropout(self.projectR(rppg_tensor))
+            proj_list.append(R_proj)
+
+        fusion_input = torch.cat(proj_list, dim=-1)
+        fusion_h = F_nn.relu(self.post_fusion_layer_1(fusion_input), inplace=False)  # [hidden_size]
         x_f = F_nn.relu(self.post_fusion_layer_2(fusion_h), inplace=False)
         output_fusion = self.post_fusion_layer_3(x_f)  # [num_classes]
         
