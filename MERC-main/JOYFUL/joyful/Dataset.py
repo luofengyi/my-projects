@@ -134,6 +134,10 @@ class Dataset:
 
             labels.extend(s.label)
 
+            # 将encoder子损失按utterance数量归一化，避免长序列导致loss偏大
+            if cur_len > 0:
+                losst = losst / cur_len
+
         label_tensor = torch.tensor(labels).long()
         data = {
             "text_len_tensor": text_len_tensor,

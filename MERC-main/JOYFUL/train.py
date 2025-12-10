@@ -329,8 +329,8 @@ if __name__ == "__main__":
     parser.add_argument("--cl_loss_weight", type=float, default=0.2)
     
     # 基础优化方案参数
-    parser.add_argument("--encoder_loss_weight", type=float, default=0.03,
-                        help="Weight for encoder reconstruction loss (recommended: 0.03, original: 0.05)")
+    parser.add_argument("--encoder_loss_weight", type=float, default=0.01,
+                        help="Weight for encoder reconstruction loss (lower to reduce initial loss; was 0.03)")
     parser.add_argument("--use_smooth_l1", action="store_true", default=False,
                         help="Use SmoothL1Loss instead of MSELoss for reconstruction (recommended)")
     parser.add_argument("--gate_reg_weight", type=float, default=0.01,

@@ -416,7 +416,9 @@ class AutoFusion_Hierarchical(nn.Module):
 
         # 总损失：重构损失 + 门控正则化
         # 为避免初期损失过大，引入可配置缩放系数 fusion_recon_weight
-        recon_loss = (globalLoss + interLoss) * self.fusion_recon_weight
+        # 额外按输入维度进行归一，防止高维拼接造成大损失
+        dim_norm = max(1.0, self.input_features / 512.0)
+        recon_loss = (globalLoss + interLoss) * self.fusion_recon_weight / dim_norm
         loss = recon_loss + gate_regularization
 
         # 输出格式保持与原始AutoFusion一致
