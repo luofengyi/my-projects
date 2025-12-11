@@ -274,8 +274,10 @@ class AutoFusion_Hierarchical(nn.Module):
             
             # 共享底层特征提取（硬共享策略）
             # 多模态融合特征提取
+            # 注意：ULGM只使用A/T/V（1380维），不使用rPPG
+            ulgm_fusion_dim = 100 + 768 + 512  # A/T/V: 1380
             self.post_fusion_dropout = nn.Dropout(drop_rate)
-            self.post_fusion_layer_1 = nn.Linear(input_features, hidden_size)
+            self.post_fusion_layer_1 = nn.Linear(ulgm_fusion_dim, hidden_size)
             self.post_fusion_layer_2 = nn.Linear(hidden_size, hidden_size)
             self.post_fusion_layer_3 = nn.Linear(hidden_size, num_classes)
             
@@ -337,11 +339,18 @@ class AutoFusion_Hierarchical(nn.Module):
         a = a.to(torch.float32)
         t = t.to(torch.float32)
         v = v.to(torch.float32)
-        if self.use_rppg:
-            if rppg is None:
-                rppg = torch.zeros(self.rppg_raw_dim, device=a.device)
+        
+        # rPPG质量检测：如果为None或无效，完全跳过rPPG分支
+        use_rppg_this_sample = False
+        if self.use_rppg and rppg is not None:
+            rppg = torch.as_tensor(rppg, dtype=torch.float32, device=a.device)
+            # 再次检测质量（防止传入无效rPPG）
+            abs_max = torch.abs(rppg).max().item()
+            variance = torch.var(rppg).item()
+            if abs_max >= 1e-6 and variance >= 1e-4:
+                use_rppg_this_sample = True
             else:
-                rppg = torch.as_tensor(rppg, dtype=torch.float32, device=a.device)
+                rppg = None  # 无效，设为None
 
         # ========== 局部特征学习部分（支持rPPG） ==========
         B = self.projectB(torch.ones(self.proj_dim, device=a.device))
@@ -362,7 +371,8 @@ class AutoFusion_Hierarchical(nn.Module):
         modal_projections.extend([A, T, V])
         modal_weighted.extend([bba, bbt, bbv])
 
-        if self.use_rppg and self.projectR is not None:
+        # 只有在rPPG有效时才添加rPPG分支
+        if use_rppg_this_sample and self.projectR is not None:
             R, bbr = _project_and_weight(rppg, self.projectR)
             modal_projections.append(R)
             modal_weighted.append(bbr)
@@ -373,11 +383,23 @@ class AutoFusion_Hierarchical(nn.Module):
 
         # ========== 上下文融合部分（改进：添加层次化门控） ==========
         # 拼接多模态特征（在统一投影空间）
-        concat_features = torch.cat(modal_projections)  # [input_features]
-        if concat_features.shape[0] != self.input_features:
+        concat_features = torch.cat(modal_projections)  # [actual_dim]
+        
+        # 动态维度处理：如果rPPG被跳过，维度会减少
+        actual_dim = concat_features.shape[0]
+        expected_dim_without_rppg = 3 * self.proj_dim  # A/T/V: 1380
+        expected_dim_with_rppg = 4 * self.proj_dim     # A/T/V/R: 1840
+        
+        # 如果实际维度与预期不匹配，进行填充或调整
+        if actual_dim == expected_dim_without_rppg and self.input_features == expected_dim_with_rppg:
+            # rPPG被跳过，但模型期望包含rPPG：用零填充
+            padding = torch.zeros(self.proj_dim, device=concat_features.device)
+            concat_features = torch.cat([concat_features, padding])
+        elif actual_dim != self.input_features:
+            # 其他维度不匹配的情况
             raise ValueError(
-                f"concat_features dim {concat_features.shape[0]} != expected {self.input_features}. "
-                f"请检查rPPG配置与rppg_proj_dim是否匹配。"
+                f"concat_features dim {actual_dim} != expected {self.input_features}. "
+                f"rPPG status: use_rppg_this_sample={use_rppg_this_sample}"
             )
         
         # 内层：话语级门控融合（替换原来的fuse_inGlobal）
@@ -427,21 +449,21 @@ class AutoFusion_Hierarchical(nn.Module):
         # ========== ULGM模块：单模态监督（仅训练时） ==========
         unimodal_loss = None
         if self.use_ulgm and self.training and labels is not None:
-            # pass rppg through so unimodal loss can build fused input with the
-            # same projected dimensions used elsewhere (avoid dim mismatch)
-            if self.use_rppg:
-                unimodal_loss = self._compute_unimodal_loss(a, t, v, labels, rppg=rppg)
-            else:
-                unimodal_loss = self._compute_unimodal_loss(a, t, v, labels)
+            # ULGM只使用A/T/V原始特征，不使用rPPG
+            # 原因：rPPG是生理信号，不适合生成单模态伪标签
+            unimodal_loss = self._compute_unimodal_loss(a, t, v, labels)
         
         return output, loss, unimodal_loss
     
-    def _compute_unimodal_loss(self, a, t, v, labels, rppg=None):
+    def _compute_unimodal_loss(self, a, t, v, labels):
         """
         计算单模态分类损失（使用ULGM生成的伪标签）
         
+        注意：ULGM只使用A/T/V原始特征，不使用rPPG
+        原因：rPPG是生理信号，与面部/语音/文本表达机制不同，不适合生成单模态伪标签
+        
         流程：
-        1. 提取多模态融合特征和单模态特征
+        1. 提取多模态融合特征（A/T/V）和单模态特征
         2. 使用ULGM生成单模态伪标签
         3. 更新ULGM的类中心
         4. 计算基于伪标签的损失
@@ -468,25 +490,11 @@ class AutoFusion_Hierarchical(nn.Module):
         # 确保label是标量（0维tensor）
         assert label.dim() == 0, f"Label should be scalar (0-dim), got shape {label.shape}"
         
-        # ========== 步骤1：特征提取 ==========
-        # 为避免与模型其他部分的维度不一致，这里使用与全局融合相同的投影空间
-        # 对原始模态做投影（projectA/T/V 会把各模态映射到 self.proj_dim）
-        A_proj = self.post_fusion_dropout(self.projectA(a))
-        T_proj = self.post_fusion_dropout(self.projectT(t))
-        V_proj = self.post_fusion_dropout(self.projectV(v))
-
-        proj_list = [A_proj, T_proj, V_proj]
-        if self.use_rppg:
-            if rppg is None:
-                # 如果外部未提供 rppg，则使用零向量投影保持维度一致
-                rppg_tensor = torch.zeros(self.rppg_raw_dim, device=a.device)
-            else:
-                rppg_tensor = rppg
-            R_proj = self.post_fusion_dropout(self.projectR(rppg_tensor))
-            proj_list.append(R_proj)
-
-        fusion_input = torch.cat(proj_list, dim=-1)
-        fusion_h = F_nn.relu(self.post_fusion_layer_1(fusion_input), inplace=False)  # [hidden_size]
+        # ========== 步骤1：特征提取（只使用A/T/V，不使用rPPG） ==========
+        # 多模态融合特征：拼接A/T/V原始特征
+        fusion_input = torch.cat([a, t, v], dim=-1)  # [100+768+512=1380]
+        fusion_h = self.post_fusion_dropout(fusion_input)
+        fusion_h = F_nn.relu(self.post_fusion_layer_1(fusion_h), inplace=False)  # [hidden_size]
         x_f = F_nn.relu(self.post_fusion_layer_2(fusion_h), inplace=False)
         output_fusion = self.post_fusion_layer_3(x_f)  # [num_classes]
         

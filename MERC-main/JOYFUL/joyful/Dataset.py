@@ -70,6 +70,14 @@ class Dataset:
                         rppg_feat = torch.tensor(s.rppg_features[idx], dtype=torch.float32)
                     else:
                         rppg_feat = torch.zeros(self.rppg_raw_dim, dtype=torch.float32)
+                    
+                    # 质量检测：如果是零向量或低方差，设为None（完全跳过rPPG分支）
+                    if rppg_feat is not None:
+                        abs_max = torch.abs(rppg_feat).max().item()
+                        variance = torch.var(rppg_feat).item()
+                        # 零向量检测（阈值1e-6）或低方差检测（阈值1e-4）
+                        if abs_max < 1e-6 or variance < 1e-4:
+                            rppg_feat = None  # 标记为无效，融合时完全跳过
                 else:
                     rppg_feat = None
                 
