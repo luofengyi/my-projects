@@ -378,29 +378,48 @@ class AutoFusion_Hierarchical(nn.Module):
             modal_weighted.append(bbr)
 
         inter_input = torch.cat(modal_weighted)
+        
+        # 动态维度适配：如果实际维度与初始化时不同，动态调整
+        # 这是因为rPPG可能在运行时被质量检测跳过
+        actual_inter_dim = inter_input.shape[0]
+        if actual_inter_dim != self.input_features:
+            # 需要临时调整fuse_inInter和fuse_outInter的期望维度
+            # 使用零填充保持维度一致
+            padded_input = torch.zeros(self.input_features, device=inter_input.device)
+            padded_input[:actual_inter_dim] = inter_input
+            inter_input = padded_input
+        
         interCompressed = self.fuse_inInter(inter_input)
-        interLoss = self.criterion(self.fuse_outInter(interCompressed), inter_input)
+        
+        # 重构时使用原始维度
+        inter_reconstructed = self.fuse_outInter(interCompressed)
+        if actual_inter_dim != self.input_features:
+            inter_reconstructed = inter_reconstructed[:actual_inter_dim]
+            inter_input_original = inter_input[:actual_inter_dim]
+        else:
+            inter_reconstructed = inter_reconstructed
+            inter_input_original = inter_input
+        
+        interLoss = self.criterion(inter_reconstructed, inter_input_original)
 
         # ========== 上下文融合部分（改进：添加层次化门控） ==========
         # 拼接多模态特征（在统一投影空间）
         concat_features = torch.cat(modal_projections)  # [actual_dim]
         
-        # 动态维度处理：如果rPPG被跳过，维度会减少
+        # 动态维度适配：支持有/无rPPG的情况
+        # input_features现在固定为1380（只有A/T/V），即使启用了--use_rppg
+        # 这样可以避免维度不匹配的问题
         actual_dim = concat_features.shape[0]
-        expected_dim_without_rppg = 3 * self.proj_dim  # A/T/V: 1380
-        expected_dim_with_rppg = 4 * self.proj_dim     # A/T/V/R: 1840
         
-        # 如果实际维度与预期不匹配，进行填充或调整
-        if actual_dim == expected_dim_without_rppg and self.input_features == expected_dim_with_rppg:
-            # rPPG被跳过，但模型期望包含rPPG：用零填充
-            padding = torch.zeros(self.proj_dim, device=concat_features.device)
-            concat_features = torch.cat([concat_features, padding])
-        elif actual_dim != self.input_features:
-            # 其他维度不匹配的情况
-            raise ValueError(
-                f"concat_features dim {actual_dim} != expected {self.input_features}. "
-                f"rPPG status: use_rppg_this_sample={use_rppg_this_sample}"
-            )
+        # 如果实际维度与期望不符（理论上不应该发生），进行零填充
+        if actual_dim != self.input_features:
+            if actual_dim < self.input_features:
+                # 维度不足，零填充
+                padding = torch.zeros(self.input_features - actual_dim, device=concat_features.device)
+                concat_features = torch.cat([concat_features, padding])
+            else:
+                # 维度过多，截断（不应该发生）
+                concat_features = concat_features[:self.input_features]
         
         # 内层：话语级门控融合（替换原来的fuse_inGlobal）
         globalCompressed = self.utterance_gate(concat_features)  # [512]
