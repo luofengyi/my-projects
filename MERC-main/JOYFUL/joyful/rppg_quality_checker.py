@@ -136,3 +136,4 @@ class RPPGAdaptiveWeightModule(nn.Module):
         
         return weight.squeeze()
 
+

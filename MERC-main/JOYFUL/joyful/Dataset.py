@@ -5,6 +5,7 @@ import torch
 import numpy as np
 
 from threading import current_thread
+from joyful.rppg_extractor import RPPGQualityChecker
 
 
 class Dataset:
@@ -19,6 +20,9 @@ class Dataset:
         # rPPG相关配置（可选）
         self.use_rppg = getattr(args, "use_rppg", False)
         self.rppg_raw_dim = getattr(args, "rppg_raw_dim", 64)
+        self.rppg_quality_check = getattr(args, "rppg_quality_check", "basic")  # basic / comprehensive
+        self.rppg_quality_threshold = getattr(args, "rppg_quality_threshold", 0.3)
+        self.rppg_fs = getattr(args, "rppg_fs", 30)  # 采样率（帧率）
         if WT:
             self.modelF.train()
         else:
@@ -71,13 +75,23 @@ class Dataset:
                     else:
                         rppg_feat = torch.zeros(self.rppg_raw_dim, dtype=torch.float32)
                     
-                    # 质量检测：如果是零向量或低方差，设为None（完全跳过rPPG分支）
+                    # 改进的质量检测：根据配置选择检测方法
                     if rppg_feat is not None:
-                        abs_max = torch.abs(rppg_feat).max().item()
-                        variance = torch.var(rppg_feat).item()
-                        # 零向量检测（阈值1e-6）或低方差检测（阈值1e-4）
-                        if abs_max < 1e-6 or variance < 1e-4:
-                            rppg_feat = None  # 标记为无效，融合时完全跳过
+                        if self.rppg_quality_check == "comprehensive":
+                            # 综合质量检测：统计 + 频域
+                            is_valid, quality_score = RPPGQualityChecker.comprehensive_check(
+                                rppg_feat, fs=self.rppg_fs
+                            )
+                            if not is_valid or quality_score < self.rppg_quality_threshold:
+                                rppg_feat = None
+                                # 可选：记录质量分数用于分析
+                                # print(f"[Debug] rPPG quality too low: {quality_score:.3f}")
+                        else:
+                            # 基础质量检测：零向量或低方差
+                            abs_max = torch.abs(rppg_feat).max().item()
+                            variance = torch.var(rppg_feat).item()
+                            if abs_max < 1e-6 or variance < 1e-4:
+                                rppg_feat = None  # 标记为无效，融合时完全跳过
                 else:
                     rppg_feat = None
                 

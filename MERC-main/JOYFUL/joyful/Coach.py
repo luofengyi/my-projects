@@ -203,7 +203,7 @@ class Coach:
 
         # 计算训练集F1分数
         train_f1 = self.evaluate_train_set()
-        
+
         end_time = time.time()
         log.info("")
         log.info(

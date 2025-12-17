@@ -172,11 +172,13 @@ def main(args):
             args.class_weights_tensor = weight_tensor
             log.info(f"Auto class weights computed and applied: {weight_tensor.cpu().numpy()}")
 
-    # 计算input_features: 基于原始模态维度，如果启用rPPG则添加其投影维度
+    # 计算input_features: 基于原始模态维度
     # keep args.dataset_embedding_dims as the final fused embedding size used later
     input_features = args.dataset_raw_dims[args.dataset][args.modalities]
-    if getattr(args, "use_rppg", False):
-        input_features = input_features + args.rppg_proj_dim
+    # 注意：不在此增加rppg_proj_dim，因为rPPG可能在运行时被质量检测跳过
+    # 融合模块会根据实际接收到的模态数量动态调整维度
+    # if getattr(args, "use_rppg", False):
+    #     input_features = input_features + args.rppg_proj_dim
     
     # 检查是否使用层次化融合
     use_hierarchical = getattr(args, 'use_hierarchical_fusion', False)
@@ -383,6 +385,12 @@ if __name__ == "__main__":
                         help="Raw dimension of rPPG feature per utterance")
     parser.add_argument("--rppg_proj_dim", type=int, default=460,
                         help="Projection dimension for rPPG before fusion (aligns with other modalities)")
+    parser.add_argument("--rppg_quality_check", type=str, default="basic", choices=["basic", "comprehensive"],
+                        help="rPPG quality check method: basic (variance only) or comprehensive (variance + frequency)")
+    parser.add_argument("--rppg_quality_threshold", type=float, default=0.3,
+                        help="Minimum quality score for rPPG features (0-1), only used with comprehensive check")
+    parser.add_argument("--rppg_fs", type=int, default=30,
+                        help="rPPG sampling rate (frame rate) for frequency domain quality check")
     
     # 梯度裁剪参数（用于防止梯度爆炸）
     parser.add_argument("--max_grad_norm", type=float, default=1.0,
