@@ -23,12 +23,40 @@ class Dataset:
         self.rppg_quality_check = getattr(args, "rppg_quality_check", "basic")  # basic / comprehensive
         self.rppg_quality_threshold = getattr(args, "rppg_quality_threshold", 0.3)
         self.rppg_fs = getattr(args, "rppg_fs", 30)  # 采样率（帧率）
+        
+        # rPPG统计信息
+        self.rppg_stats = {
+            'total_samples': 0,
+            'valid_samples': 0,
+            'invalid_samples': 0,
+            'zero_samples': 0,
+            'low_quality_samples': 0
+        }
+        
         if WT:
             self.modelF.train()
         else:
             self.modelF.eval()
 
         self.embedding_dim = args.dataset_embedding_dims[args.dataset][args.modalities]
+    
+    def reset_rppg_stats(self):
+        """重置rPPG统计信息（每个epoch开始时调用）"""
+        self.rppg_stats = {
+            'total_samples': 0,
+            'valid_samples': 0,
+            'invalid_samples': 0,
+            'zero_samples': 0,
+            'low_quality_samples': 0
+        }
+    
+    def get_rppg_stats(self):
+        """获取rPPG统计信息"""
+        if self.rppg_stats['total_samples'] > 0:
+            valid_ratio = self.rppg_stats['valid_samples'] / self.rppg_stats['total_samples']
+        else:
+            valid_ratio = 0.0
+        return self.rppg_stats, valid_ratio
 
     def __len__(self):
         return self.num_batches
@@ -68,12 +96,15 @@ class Dataset:
                 
                 # rPPG特征：如不存在则使用零向量，保证向后兼容
                 if self.use_rppg:
+                    self.rppg_stats['total_samples'] += 1
+                    
                     if hasattr(s, "rppg") and len(s.rppg) > idx:
                         rppg_feat = torch.tensor(s.rppg[idx], dtype=torch.float32)
                     elif hasattr(s, "rppg_features") and len(s.rppg_features) > idx:
                         rppg_feat = torch.tensor(s.rppg_features[idx], dtype=torch.float32)
                     else:
                         rppg_feat = torch.zeros(self.rppg_raw_dim, dtype=torch.float32)
+                        self.rppg_stats['zero_samples'] += 1
                     
                     # 改进的质量检测：根据配置选择检测方法
                     if rppg_feat is not None:
@@ -84,14 +115,18 @@ class Dataset:
                             )
                             if not is_valid or quality_score < self.rppg_quality_threshold:
                                 rppg_feat = None
-                                # 可选：记录质量分数用于分析
-                                # print(f"[Debug] rPPG quality too low: {quality_score:.3f}")
+                                self.rppg_stats['low_quality_samples'] += 1
+                            else:
+                                self.rppg_stats['valid_samples'] += 1
                         else:
                             # 基础质量检测：零向量或低方差
                             abs_max = torch.abs(rppg_feat).max().item()
                             variance = torch.var(rppg_feat).item()
                             if abs_max < 1e-6 or variance < 1e-4:
                                 rppg_feat = None  # 标记为无效，融合时完全跳过
+                                self.rppg_stats['invalid_samples'] += 1
+                            else:
+                                self.rppg_stats['valid_samples'] += 1
                 else:
                     rppg_feat = None
                 

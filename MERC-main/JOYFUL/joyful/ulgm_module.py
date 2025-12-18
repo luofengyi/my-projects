@@ -166,10 +166,11 @@ class ULGM(nn.Module):
         # 获取该类别的特定配置
         class_config = self.class_specific_config.get(
             label_idx, 
-            {'min_samples': 10, 'true_label_weight': 0.3}
+            {'min_samples': 10, 'true_label_weight': 0.3, 'early_boost': 1.0}
         )
         min_samples = class_config['min_samples']
         true_label_base_weight = class_config['true_label_weight']
+        early_boost = class_config.get('early_boost', 1.0)  # Happy类早期学习加速因子
         
         # 如果该类样本数不足，直接返回真实标签
         if self.class_counts[label_idx] < min_samples:
@@ -230,16 +231,25 @@ class ULGM(nn.Module):
             
             # 类别特定的融合策略
             # Happy等少数类：保留更多真实标签，减少对不稳定预测的依赖
+            # 应用early_boost：在早期epoch（样本数较少时）进一步增加真实标签权重
+            sample_count = self.class_counts[label_idx].item()
+            if sample_count < min_samples * 3:  # 早期阶段（样本数 < 3倍min_samples）
+                boost_factor = early_boost  # 应用early_boost加速因子
+            elif sample_count < min_samples * 5:  # 中期阶段
+                boost_factor = 1.0 + (early_boost - 1.0) * 0.5  # 线性衰减
+            else:  # 后期阶段
+                boost_factor = 1.0  # 不再加速
+            
             if confidence > confidence_threshold:
                 # 高置信度：更多依赖多模态预测，但Happy类仍保留更多真实标签
                 distance_weight = 0.2
-                multimodal_weight = 0.8 - true_label_base_weight
-                true_label_weight = true_label_base_weight
+                multimodal_weight = 0.8 - true_label_base_weight * boost_factor
+                true_label_weight = true_label_base_weight * boost_factor
             else:
                 # 低置信度：大幅增加真实标签权重，尤其是Happy类
                 distance_weight = 0.3
-                multimodal_weight = 0.7 - true_label_base_weight * 1.5
-                true_label_weight = true_label_base_weight * 1.5
+                multimodal_weight = 0.7 - true_label_base_weight * 1.5 * boost_factor
+                true_label_weight = true_label_base_weight * 1.5 * boost_factor
             
             # 确保权重和为1
             total_weight = distance_weight + multimodal_weight + true_label_weight

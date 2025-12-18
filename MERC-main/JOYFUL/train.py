@@ -201,13 +201,15 @@ def main(args):
             if ulgm_class_weights is None:
                 log.warning("ULGM class weights not defined for dataset '%s'; falling back to uniform weighting.", args.dataset)
         
-        # 准备ULGM类别特定配置（为Happy类提供更保守策略）
+        # 准备ULGM类别特定配置（为Happy类提供更激进的早期学习策略）
         ulgm_class_config = None
         if args.use_ulgm:
+            happy_early_boost = getattr(args, 'happy_early_boost', 1.5)
             ulgm_class_config = {
                 0: {  # Happy类（iemocap_4中happy索引为0）
                     'min_samples': args.ulgm_happy_min_samples,
-                    'true_label_weight': args.ulgm_happy_true_label_weight
+                    'true_label_weight': args.ulgm_happy_true_label_weight,
+                    'early_boost': happy_early_boost  # 早期学习加速因子
                 },
                 1: {'min_samples': 10, 'true_label_weight': 0.3},  # Sad
                 2: {'min_samples': 10, 'true_label_weight': 0.3},  # Neutral
@@ -351,16 +353,18 @@ if __name__ == "__main__":
                         help="Use ULGM module for unimodal supervision")
     parser.add_argument("--unimodal_loss_weight", type=float, default=0.002,
                         help="Target weight for ULGM loss after warmup (e.g., 0.0005-0.005)")
-    parser.add_argument("--unimodal_init_weight", type=float, default=0.0,
-                        help="Initial ULGM weight before warmup (0 keeps ULGM off early)")
-    parser.add_argument("--unimodal_warmup_epochs", type=int, default=15,
-                        help="Epochs to linearly ramp ULGM weight from init to target (15-25 for Happy stability)")
-    parser.add_argument("--unimodal_delay_epochs", type=int, default=10,
-                        help="Epochs to hold init weight before warmup begins (10-15 recommended)")
-    parser.add_argument("--ulgm_happy_min_samples", type=int, default=20,
-                        help="Min samples needed before ULGM generates pseudo labels for Happy class")
-    parser.add_argument("--ulgm_happy_true_label_weight", type=float, default=0.5,
-                        help="Weight of true label in Happy pseudo label (0.5-0.7 for stability)")
+    parser.add_argument("--unimodal_init_weight", type=float, default=0.0005,
+                        help="Initial ULGM weight before warmup (0.0005 starts learning earlier, 0 keeps off)")
+    parser.add_argument("--unimodal_warmup_epochs", type=int, default=8,
+                        help="Epochs to linearly ramp ULGM weight from init to target (8-12 for faster learning, 15-25 for stability)")
+    parser.add_argument("--unimodal_delay_epochs", type=int, default=3,
+                        help="Epochs to hold init weight before warmup begins (3-5 for faster Happy learning, 10-15 for stability)")
+    parser.add_argument("--ulgm_happy_min_samples", type=int, default=10,
+                        help="Min samples needed before ULGM generates pseudo labels for Happy class (lower=earlier learning)")
+    parser.add_argument("--ulgm_happy_true_label_weight", type=float, default=0.7,
+                        help="Weight of true label in Happy pseudo label (0.6-0.8 for faster convergence)")
+    parser.add_argument("--happy_early_boost", type=float, default=1.5,
+                        help="Boost factor for Happy class weight in early epochs (1.2-2.0, higher=faster learning)")
     parser.add_argument("--ulgm_hidden_size", type=int, default=128,
                         help="Hidden size for ULGM feature extraction")
     parser.add_argument("--ulgm_drop_rate", type=float, default=0.3,

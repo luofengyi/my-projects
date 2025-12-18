@@ -167,6 +167,11 @@ class Coach:
         self.modelF.train()
 
         self.trainset.shuffle()
+        
+        # 重置rPPG统计信息
+        if hasattr(self.trainset, 'reset_rppg_stats'):
+            self.trainset.reset_rppg_stats()
+        
         current_unimodal_weight = self._compute_unimodal_weight(epoch)
         for idx in tqdm(range(len(self.trainset)), desc="train epoch {}".format(epoch)):
             self.model.zero_grad()
@@ -205,6 +210,22 @@ class Coach:
         train_f1 = self.evaluate_train_set()
 
         end_time = time.time()
+        
+        # 打印rPPG统计信息
+        if hasattr(self.trainset, 'get_rppg_stats'):
+            rppg_stats, valid_ratio = self.trainset.get_rppg_stats()
+            if rppg_stats['total_samples'] > 0:
+                log.info("")
+                log.info(
+                    "Epoch %d: rPPG valid samples: %d/%d (%.1f%%)" 
+                    % (epoch, rppg_stats['valid_samples'], rppg_stats['total_samples'], valid_ratio * 100)
+                )
+                if self.trainset.rppg_quality_check == "comprehensive":
+                    log.info(
+                        "  └─ Low quality: %d, Zero: %d, Valid ratio: %.1f%%" 
+                        % (rppg_stats['low_quality_samples'], rppg_stats['zero_samples'], valid_ratio * 100)
+                    )
+        
         log.info("")
         log.info(
             "[Epoch %d] [Loss: %f] [Train F1: %f] [Time: %f]"
