@@ -6,6 +6,7 @@ import numpy as np
 
 from threading import current_thread
 from joyful.rppg_extractor import RPPGQualityChecker
+import pickle
 
 
 class Dataset:
@@ -23,6 +24,15 @@ class Dataset:
         self.rppg_quality_check = getattr(args, "rppg_quality_check", "basic")  # basic / comprehensive
         self.rppg_quality_threshold = getattr(args, "rppg_quality_threshold", 0.3)
         self.rppg_fs = getattr(args, "rppg_fs", 30)  # 采样率（帧率）
+        # 离线rPPG特征映射：utterance_id -> feature(64,)
+        self.rppg_feature_map_path = getattr(args, "rppg_feature_map", None)
+        self.rppg_feature_map = None
+        if self.use_rppg and self.rppg_feature_map_path:
+            try:
+                with open(self.rppg_feature_map_path, "rb") as f:
+                    self.rppg_feature_map = pickle.load(f)
+            except Exception:
+                self.rppg_feature_map = None
         
         # rPPG统计信息
         self.rppg_stats = {
@@ -98,10 +108,20 @@ class Dataset:
                 if self.use_rppg:
                     self.rppg_stats['total_samples'] += 1
                     
+                    # 优先：Sample对象内已存在rppg / rppg_features
                     if hasattr(s, "rppg") and len(s.rppg) > idx:
                         rppg_feat = torch.tensor(s.rppg[idx], dtype=torch.float32)
                     elif hasattr(s, "rppg_features") and len(s.rppg_features) > idx:
                         rppg_feat = torch.tensor(s.rppg_features[idx], dtype=torch.float32)
+                    # 次优：从离线feature_map按utterance_id加载（推荐）
+                    elif self.rppg_feature_map is not None and hasattr(s, "sentence") and len(s.sentence) > idx:
+                        utt_id = s.sentence[idx]
+                        feat = self.rppg_feature_map.get(utt_id, None)
+                        if feat is not None:
+                            rppg_feat = torch.tensor(feat, dtype=torch.float32)
+                        else:
+                            rppg_feat = torch.zeros(self.rppg_raw_dim, dtype=torch.float32)
+                            self.rppg_stats['zero_samples'] += 1
                     else:
                         rppg_feat = torch.zeros(self.rppg_raw_dim, dtype=torch.float32)
                         self.rppg_stats['zero_samples'] += 1
