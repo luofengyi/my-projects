@@ -175,10 +175,12 @@ def main(args):
     # 计算input_features: 基于原始模态维度
     # keep args.dataset_embedding_dims as the final fused embedding size used later
     input_features = args.dataset_raw_dims[args.dataset][args.modalities]
-    # 注意：不在此增加rppg_proj_dim，因为rPPG可能在运行时被质量检测跳过
-    # 融合模块会根据实际接收到的模态数量动态调整维度
-    # if getattr(args, "use_rppg", False):
-    #     input_features = input_features + args.rppg_proj_dim
+    # 如果启用rPPG且提供了离线特征map，则恢复“加上rppg_proj_dim”的行为，
+    # 这样融合模块会真实纳入rPPG（不再是零向量）。
+    if getattr(args, "use_rppg", False) and getattr(args, "rppg_feature_map", None):
+        input_features = input_features + args.rppg_proj_dim
+    elif getattr(args, "use_rppg", False) and not getattr(args, "rppg_feature_map", None):
+        log.warning("use_rppg enabled but --rppg_feature_map not provided; rPPG may be all-zeros and will be filtered out.")
     
     # 检查是否使用层次化融合
     use_hierarchical = getattr(args, 'use_hierarchical_fusion', False)
@@ -389,6 +391,8 @@ if __name__ == "__main__":
                         help="Raw dimension of rPPG feature per utterance")
     parser.add_argument("--rppg_proj_dim", type=int, default=460,
                         help="Projection dimension for rPPG before fusion (aligns with other modalities)")
+    parser.add_argument("--rppg_feature_map", type=str, default=None,
+                        help="Path to offline rPPG feature map (utterance_id -> 64-d feature). If not set, rPPG likely becomes zeros.")
     parser.add_argument("--rppg_quality_check", type=str, default="basic", choices=["basic", "comprehensive"],
                         help="rPPG quality check method: basic (variance only) or comprehensive (variance + frequency)")
     parser.add_argument("--rppg_quality_threshold", type=float, default=0.3,
