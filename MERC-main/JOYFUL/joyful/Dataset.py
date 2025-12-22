@@ -43,6 +43,23 @@ class Dataset:
             re.IGNORECASE,
         )
 
+        # rPPG统计信息
+        self.rppg_stats = {
+            'total_samples': 0,
+            'valid_samples': 0,
+            'invalid_samples': 0,
+            'zero_samples': 0,
+            'low_quality_samples': 0
+        }
+
+        if WT:
+            self.modelF.train()
+        else:
+            self.modelF.eval()
+
+        # embedding_dim 用于 padding 时构建 input tensor
+        self.embedding_dim = args.dataset_embedding_dims[args.dataset][args.modalities]
+
     def _lookup_rppg_from_map(self, sample, idx: int):
         """
         从离线 feature_map 中尽可能鲁棒地获取 utterance 的 rPPG 特征。
@@ -132,22 +149,6 @@ class Dataset:
             pass
 
         return None
-        
-        # rPPG统计信息
-        self.rppg_stats = {
-            'total_samples': 0,
-            'valid_samples': 0,
-            'invalid_samples': 0,
-            'zero_samples': 0,
-            'low_quality_samples': 0
-        }
-        
-        if WT:
-            self.modelF.train()
-        else:
-            self.modelF.eval()
-
-        self.embedding_dim = args.dataset_embedding_dims[args.dataset][args.modalities]
     
     def reset_rppg_stats(self):
         """重置rPPG统计信息（每个epoch开始时调用）"""
