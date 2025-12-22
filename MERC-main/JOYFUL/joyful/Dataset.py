@@ -7,6 +7,8 @@ import numpy as np
 from threading import current_thread
 from joyful.rppg_extractor import RPPGQualityChecker
 import pickle
+import re
+import os
 
 
 class Dataset:
@@ -33,6 +35,103 @@ class Dataset:
                     self.rppg_feature_map = pickle.load(f)
             except Exception:
                 self.rppg_feature_map = None
+
+        # IEMOCAP utterance_id 常见格式：Ses04F_impro01_F000 / Ses03M_impro08a_F012 / Ses03M_impro05b_M023
+        # 这里做宽松匹配：允许 impro/script 后带字母 a/b 等，script 可含 _1/_2 片段号
+        self._utt_id_regex = re.compile(
+            r"(Ses\d{2}[FM]_(?:impro|script)\d+[a-z]?(?:_\d+)?_[FM]\d{3})",
+            re.IGNORECASE,
+        )
+
+    def _lookup_rppg_from_map(self, sample, idx: int):
+        """
+        从离线 feature_map 中尽可能鲁棒地获取 utterance 的 rPPG 特征。
+        依次尝试：
+        1) 直接 key 命中（sentence[idx] / vid[idx] / vid）
+        2) 从任意字符串里正则抽取 SesXX..._F000
+        3) 若存在 dialog_id(vid) + speaker[idx]，尝试拼接 dialog_id + '_' + speaker + idx(3位)
+        """
+        if self.rppg_feature_map is None:
+            return None
+
+        candidates = []
+
+        # sentence[idx]（可能是 utterance_id，也可能是文本/路径）
+        try:
+            if hasattr(sample, "sentence") and sample.sentence is not None and len(sample.sentence) > idx:
+                candidates.append(sample.sentence[idx])
+        except Exception:
+            pass
+
+        # vid 可能是 dialog_id（str）或 utterance_id 列表
+        try:
+            if hasattr(sample, "vid"):
+                v = sample.vid
+                if isinstance(v, (list, tuple)) and len(v) > idx:
+                    candidates.append(v[idx])
+                else:
+                    candidates.append(v)
+        except Exception:
+            pass
+
+        # 尝试直接命中 / basename / 去扩展名 / 正则抽取
+        def _yield_keys(x):
+            if x is None:
+                return
+            if not isinstance(x, str):
+                x = str(x)
+            x = x.strip()
+            if not x:
+                return
+            yield x
+            base = os.path.basename(x)
+            if base and base != x:
+                yield base
+            stem, _ext = os.path.splitext(base)
+            if stem and stem != base:
+                yield stem
+            m = self._utt_id_regex.search(x)
+            if m:
+                yield m.group(1)
+
+        tried = set()
+        for c in candidates:
+            for k in _yield_keys(c):
+                if k in tried:
+                    continue
+                tried.add(k)
+                feat = self.rppg_feature_map.get(k, None)
+                if feat is not None:
+                    return feat
+
+        # 最后兜底：用 dialog_id + speaker + idx 拼一个（仅当 vid 看起来像 dialog_id 时）
+        try:
+            dialog_id = None
+            if hasattr(sample, "vid") and isinstance(sample.vid, str):
+                dialog_id = sample.vid.strip()
+            if dialog_id:
+                # 如果 dialog_id 本身就是 utterance_id，则无需拼接
+                if self._utt_id_regex.search(dialog_id):
+                    m = self._utt_id_regex.search(dialog_id)
+                    if m:
+                        feat = self.rppg_feature_map.get(m.group(1), None)
+                        if feat is not None:
+                            return feat
+
+                spk = None
+                if hasattr(sample, "speaker") and sample.speaker is not None and len(sample.speaker) > idx:
+                    spk = sample.speaker[idx]
+                if isinstance(spk, str) and spk.strip():
+                    spk = spk.strip()[0].upper()  # 'F' or 'M'
+                    if spk in ("F", "M"):
+                        key = f"{dialog_id}_{spk}{idx:03d}"
+                        feat = self.rppg_feature_map.get(key, None)
+                        if feat is not None:
+                            return feat
+        except Exception:
+            pass
+
+        return None
         
         # rPPG统计信息
         self.rppg_stats = {
@@ -115,8 +214,7 @@ class Dataset:
                         rppg_feat = torch.tensor(s.rppg_features[idx], dtype=torch.float32)
                     # 次优：从离线feature_map按utterance_id加载（推荐）
                     elif self.rppg_feature_map is not None and hasattr(s, "sentence") and len(s.sentence) > idx:
-                        utt_id = s.sentence[idx]
-                        feat = self.rppg_feature_map.get(utt_id, None)
+                        feat = self._lookup_rppg_from_map(s, idx)
                         if feat is not None:
                             rppg_feat = torch.tensor(feat, dtype=torch.float32)
                         else:
