@@ -36,12 +36,75 @@ class Dataset:
             except Exception:
                 self.rppg_feature_map = None
 
-        # IEMOCAP utterance_id 常见格式：Ses04F_impro01_F000 / Ses03M_impro08a_F012 / Ses03M_impro05b_M023
-        # 这里做宽松匹配：允许 impro/script 后带字母 a/b 等，script 可含 _1/_2 片段号
+        # IEMOCAP utterance_id 规范格式（也是你当前 rPPG feature_map 的 key）：
+        #   Ses01F_impro01_F000 / Ses03M_impro08a_F012 / Ses03M_impro05b_M023 / Ses01F_script02_1_F003
+        # 这里用分组正则 + 规范化重建，确保无论输入大小写/路径如何，都能变成标准 key。
         self._utt_id_regex = re.compile(
-            r"(Ses\d{2}[FM]_(?:impro|script)\d+[a-z]?(?:_\d+)?_[FM]\d{3})",
+            r"Ses(?P<sess>\d{2})(?P<dg>[FM])_"
+            r"(?P<kind>impro|script)(?P<num>\d+)(?P<suf>[a-z]?)"
+            r"(?P<part>_\d+)?_"
+            r"(?P<spk>[FM])(?P<idx>\d{3})",
             re.IGNORECASE,
         )
+
+    def _canonical_utt_id(self, text: str):
+        if not text:
+            return None
+        m = self._utt_id_regex.search(text)
+        if not m:
+            return None
+        sess = m.group("sess")
+        dg = m.group("dg").upper()
+        kind = m.group("kind").lower()
+        num = m.group("num")
+        suf = (m.group("suf") or "").lower()
+        part = m.group("part") or ""
+        spk = m.group("spk").upper()
+        idx = m.group("idx")
+        return f"Ses{sess}{dg}_{kind}{num}{suf}{part}_{spk}{idx}"
+
+    def _iter_stringish_candidates(self, sample, idx: int):
+        """
+        更彻底的候选 key 收集：
+        - sentence[idx], vid / vid[idx]
+        - sample.__dict__ 中所有 “小体量的字符串 / 字符串列表” 字段
+        """
+        # sentence[idx] / vid / vid[idx]
+        try:
+            if hasattr(sample, "sentence") and sample.sentence is not None and len(sample.sentence) > idx:
+                yield sample.sentence[idx]
+        except Exception:
+            pass
+        try:
+            if hasattr(sample, "vid"):
+                v = sample.vid
+                if isinstance(v, (list, tuple)) and len(v) > idx:
+                    yield v[idx]
+                else:
+                    yield v
+        except Exception:
+            pass
+
+        # 扫描 sample.__dict__：仅限 str 或 “长度可控的 str list/tuple”
+        try:
+            d = getattr(sample, "__dict__", {}) or {}
+            for k, v in d.items():
+                if v is None:
+                    continue
+                if isinstance(v, str):
+                    yield v
+                elif isinstance(v, (list, tuple)):
+                    # 防止扫到巨大的数组/向量：只处理最多 500 项、且元素为 str 的列表
+                    if len(v) > 500:
+                        continue
+                    if all(isinstance(x, str) for x in v):
+                        if len(v) > idx:
+                            yield v[idx]
+                        # 也顺带扫前几项，防止 idx 对不齐
+                        for x in v[:3]:
+                            yield x
+        except Exception:
+            pass
 
     def _lookup_rppg_from_map(self, sample, idx: int):
         """
@@ -54,27 +117,7 @@ class Dataset:
         if self.rppg_feature_map is None:
             return None
 
-        candidates = []
-
-        # sentence[idx]（可能是 utterance_id，也可能是文本/路径）
-        try:
-            if hasattr(sample, "sentence") and sample.sentence is not None and len(sample.sentence) > idx:
-                candidates.append(sample.sentence[idx])
-        except Exception:
-            pass
-
-        # vid 可能是 dialog_id（str）或 utterance_id 列表
-        try:
-            if hasattr(sample, "vid"):
-                v = sample.vid
-                if isinstance(v, (list, tuple)) and len(v) > idx:
-                    candidates.append(v[idx])
-                else:
-                    candidates.append(v)
-        except Exception:
-            pass
-
-        # 尝试直接命中 / basename / 去扩展名 / 正则抽取
+        # 尝试直接命中 / basename / 去扩展名 / 规范化 utterance_id
         def _yield_keys(x):
             if x is None:
                 return
@@ -90,12 +133,12 @@ class Dataset:
             stem, _ext = os.path.splitext(base)
             if stem and stem != base:
                 yield stem
-            m = self._utt_id_regex.search(x)
-            if m:
-                yield m.group(1)
+            canon = self._canonical_utt_id(x)
+            if canon:
+                yield canon
 
         tried = set()
-        for c in candidates:
+        for c in self._iter_stringish_candidates(sample, idx):
             for k in _yield_keys(c):
                 if k in tried:
                     continue
@@ -111,12 +154,11 @@ class Dataset:
                 dialog_id = sample.vid.strip()
             if dialog_id:
                 # 如果 dialog_id 本身就是 utterance_id，则无需拼接
-                if self._utt_id_regex.search(dialog_id):
-                    m = self._utt_id_regex.search(dialog_id)
-                    if m:
-                        feat = self.rppg_feature_map.get(m.group(1), None)
-                        if feat is not None:
-                            return feat
+                canon = self._canonical_utt_id(dialog_id)
+                if canon:
+                    feat = self.rppg_feature_map.get(canon, None)
+                    if feat is not None:
+                        return feat
 
                 spk = None
                 if hasattr(sample, "speaker") and sample.speaker is not None and len(sample.speaker) > idx:
