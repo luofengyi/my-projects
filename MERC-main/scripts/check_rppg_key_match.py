@@ -1,7 +1,5 @@
 import argparse
 import pickle
-import sys
-from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
@@ -10,15 +8,7 @@ def safe_pickle_load(path: str):
         try:
             return pickle.load(f)
         except ModuleNotFoundError as e:
-            msg = str(e)
-
-            # 兼容：pickle 里引用了 joyful.Sample 等类，需要确保 joyful 包可导入
-            if "No module named 'joyful'" in msg:
-                _ensure_joyful_importable()
-                f.seek(0)
-                return pickle.load(f)
-
-            if "numpy._core" not in msg:
+            if "numpy._core" not in str(e):
                 raise
 
             class _CompatUnpickler(pickle.Unpickler):
@@ -29,26 +19,6 @@ def safe_pickle_load(path: str):
 
             f.seek(0)
             return _CompatUnpickler(f).load()
-
-
-def _ensure_joyful_importable():
-    """
-    让 scripts/ 下的工具脚本在任意 cwd 也能 unpickle joyful.Sample。
-    尝试把包含 joyful/__init__.py 的目录加入 sys.path（通常是 MERC-main/JOYFUL）。
-    """
-    candidates: List[Path] = []
-    here = Path(__file__).resolve()
-    candidates.append(Path.cwd() / "MERC-main" / "JOYFUL")
-    candidates.append(here.parents[1] / "MERC-main" / "JOYFUL")
-    candidates.append(Path.cwd() / "JOYFUL")
-    candidates.append(here.parents[1] / "JOYFUL")
-
-    for p in candidates:
-        if (p / "joyful" / "__init__.py").exists():
-            sp = str(p)
-            if sp not in sys.path:
-                sys.path.insert(0, sp)
-            return
 
 
 def _canonical_utt_id(text: str):
