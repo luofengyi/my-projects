@@ -12,6 +12,29 @@ import os
 
 
 class Dataset:
+    @staticmethod
+    def _safe_pickle_load(path: str):
+        """
+        兼容不同 NumPy 版本的 pickle：
+        - 旧环境(NumPy1.x) 读取由 NumPy2.x dump 的对象时，可能报：No module named 'numpy._core'
+        这里用自定义 Unpickler 将 numpy._core -> numpy.core 做重定向。
+        """
+        with open(path, "rb") as f:
+            try:
+                return pickle.load(f)
+            except ModuleNotFoundError as e:
+                if "numpy._core" not in str(e):
+                    raise
+                # fallback: remap numpy._core.* -> numpy.core.*
+                class _CompatUnpickler(pickle.Unpickler):
+                    def find_class(self, module, name):
+                        if module.startswith("numpy._core"):
+                            module = module.replace("numpy._core", "numpy.core", 1)
+                        return super().find_class(module, name)
+
+                f.seek(0)
+                return _CompatUnpickler(f).load()
+
     def __init__(self, samples, modelF, WT, args) -> None:
         self.samples = samples
         self.modelF = modelF
@@ -31,14 +54,13 @@ class Dataset:
         self.rppg_feature_map = None
         if self.use_rppg and self.rppg_feature_map_path:
             try:
-                with open(self.rppg_feature_map_path, "rb") as f:
-                    self.rppg_feature_map = pickle.load(f)
+                self.rppg_feature_map = Dataset._safe_pickle_load(self.rppg_feature_map_path)
             except Exception:
                 self.rppg_feature_map = None
 
-        # IEMOCAP utterance_id 规范格式（也是你当前 rPPG feature_map 的 key）：
+        # IEMOCAP utterance_id 规范格式（也是当前 rPPG feature_map 的 key）：
         #   Ses01F_impro01_F000 / Ses03M_impro08a_F012 / Ses03M_impro05b_M023 / Ses01F_script02_1_F003
-        # 这里用分组正则 + 规范化重建，确保无论输入大小写/路径如何，都能变成标准 key。
+        # 使用分组正则并“规范化重建”，将大小写/路径等差异统一到标准 key。
         self._utt_id_regex = re.compile(
             r"Ses(?P<sess>\d{2})(?P<dg>[FM])_"
             r"(?P<kind>impro|script)(?P<num>\d+)(?P<suf>[a-z]?)"
@@ -46,134 +68,6 @@ class Dataset:
             r"(?P<spk>[FM])(?P<idx>\d{3})",
             re.IGNORECASE,
         )
-
-    def _canonical_utt_id(self, text: str):
-        if not text:
-            return None
-        m = self._utt_id_regex.search(text)
-        if not m:
-            return None
-        sess = m.group("sess")
-        dg = m.group("dg").upper()
-        kind = m.group("kind").lower()
-        num = m.group("num")
-        suf = (m.group("suf") or "").lower()
-        part = m.group("part") or ""
-        spk = m.group("spk").upper()
-        idx = m.group("idx")
-        return f"Ses{sess}{dg}_{kind}{num}{suf}{part}_{spk}{idx}"
-
-    def _iter_stringish_candidates(self, sample, idx: int):
-        """
-        更彻底的候选 key 收集：
-        - sentence[idx], vid / vid[idx]
-        - sample.__dict__ 中所有 “小体量的字符串 / 字符串列表” 字段
-        """
-        # sentence[idx] / vid / vid[idx]
-        try:
-            if hasattr(sample, "sentence") and sample.sentence is not None and len(sample.sentence) > idx:
-                yield sample.sentence[idx]
-        except Exception:
-            pass
-        try:
-            if hasattr(sample, "vid"):
-                v = sample.vid
-                if isinstance(v, (list, tuple)) and len(v) > idx:
-                    yield v[idx]
-                else:
-                    yield v
-        except Exception:
-            pass
-
-        # 扫描 sample.__dict__：仅限 str 或 “长度可控的 str list/tuple”
-        try:
-            d = getattr(sample, "__dict__", {}) or {}
-            for k, v in d.items():
-                if v is None:
-                    continue
-                if isinstance(v, str):
-                    yield v
-                elif isinstance(v, (list, tuple)):
-                    # 防止扫到巨大的数组/向量：只处理最多 500 项、且元素为 str 的列表
-                    if len(v) > 500:
-                        continue
-                    if all(isinstance(x, str) for x in v):
-                        if len(v) > idx:
-                            yield v[idx]
-                        # 也顺带扫前几项，防止 idx 对不齐
-                        for x in v[:3]:
-                            yield x
-        except Exception:
-            pass
-
-    def _lookup_rppg_from_map(self, sample, idx: int):
-        """
-        从离线 feature_map 中尽可能鲁棒地获取 utterance 的 rPPG 特征。
-        依次尝试：
-        1) 直接 key 命中（sentence[idx] / vid[idx] / vid）
-        2) 从任意字符串里正则抽取 SesXX..._F000
-        3) 若存在 dialog_id(vid) + speaker[idx]，尝试拼接 dialog_id + '_' + speaker + idx(3位)
-        """
-        if self.rppg_feature_map is None:
-            return None
-
-        # 尝试直接命中 / basename / 去扩展名 / 规范化 utterance_id
-        def _yield_keys(x):
-            if x is None:
-                return
-            if not isinstance(x, str):
-                x = str(x)
-            x = x.strip()
-            if not x:
-                return
-            yield x
-            base = os.path.basename(x)
-            if base and base != x:
-                yield base
-            stem, _ext = os.path.splitext(base)
-            if stem and stem != base:
-                yield stem
-            canon = self._canonical_utt_id(x)
-            if canon:
-                yield canon
-
-        tried = set()
-        for c in self._iter_stringish_candidates(sample, idx):
-            for k in _yield_keys(c):
-                if k in tried:
-                    continue
-                tried.add(k)
-                feat = self.rppg_feature_map.get(k, None)
-                if feat is not None:
-                    return feat
-
-        # 最后兜底：用 dialog_id + speaker + idx 拼一个（仅当 vid 看起来像 dialog_id 时）
-        try:
-            dialog_id = None
-            if hasattr(sample, "vid") and isinstance(sample.vid, str):
-                dialog_id = sample.vid.strip()
-            if dialog_id:
-                # 如果 dialog_id 本身就是 utterance_id，则无需拼接
-                canon = self._canonical_utt_id(dialog_id)
-                if canon:
-                    feat = self.rppg_feature_map.get(canon, None)
-                    if feat is not None:
-                        return feat
-
-                spk = None
-                if hasattr(sample, "speaker") and sample.speaker is not None and len(sample.speaker) > idx:
-                    spk = sample.speaker[idx]
-                if isinstance(spk, str) and spk.strip():
-                    spk = spk.strip()[0].upper()  # 'F' or 'M'
-                    if spk in ("F", "M"):
-                        key = f"{dialog_id}_{spk}{idx:03d}"
-                        feat = self.rppg_feature_map.get(key, None)
-                        if feat is not None:
-                            return feat
-        except Exception:
-            pass
-
-        return None
         
         # rPPG统计信息
         self.rppg_stats = {
@@ -190,6 +84,164 @@ class Dataset:
             self.modelF.eval()
 
         self.embedding_dim = args.dataset_embedding_dims[args.dataset][args.modalities]
+
+    def _canonical_utt_id(self, text: str):
+        if not text:
+            return None
+        if not isinstance(text, str):
+            text = str(text)
+        m = self._utt_id_regex.search(text)
+        if not m:
+            return None
+        sess = m.group("sess")
+        dg = m.group("dg").upper()
+        kind = m.group("kind").lower()
+        num = m.group("num")
+        suf = (m.group("suf") or "").lower()
+        part = m.group("part") or ""
+        spk = m.group("spk").upper()
+        idx = m.group("idx")
+        return f"Ses{sess}{dg}_{kind}{num}{suf}{part}_{spk}{idx}"
+
+    def _speaker_count_index(self, speakers, idx: int, spk: str):
+        """
+        IEMOCAP 的 utterance 命名通常是按 speaker 各自从 000 递增（F000... / M000...），
+        而训练数据的 idx 是 turn index。这里计算“截至 idx 的该 speaker 第几次出现(从0开始)”。
+        """
+        if speakers is None:
+            return None
+        try:
+            spk = (spk or "").strip().upper()
+            if spk not in ("F", "M"):
+                return None
+            cnt = 0
+            for j in range(0, idx + 1):
+                sj = speakers[j]
+                if isinstance(sj, (list, tuple)) and len(sj) > 0:
+                    sj = sj[0]
+                if isinstance(sj, str) and sj.strip():
+                    if sj.strip()[0].upper() == spk:
+                        cnt += 1
+            return max(cnt - 1, 0)
+        except Exception:
+            return None
+
+    def _lookup_rppg_from_map(self, sample, idx: int):
+        """
+        从离线 feature_map 中尽可能鲁棒地获取 utterance 的 rPPG 特征。
+        关键：iemocap_4 的 sample.sentence[idx] 多为“文本”，不是 utterance_id；
+        需要用 dialog_id(sample.vid) + speaker + (turn_idx 或 speaker_idx) 去拼 key。
+        """
+        if self.rppg_feature_map is None:
+            return None
+
+        tried = set()
+
+        def _try_key(k: str):
+            if not k:
+                return None
+            if k in tried:
+                return None
+            tried.add(k)
+            return self.rppg_feature_map.get(k, None)
+
+        def _yield_keys_from_string(x):
+            if x is None:
+                return
+            if not isinstance(x, str):
+                x = str(x)
+            x = x.strip()
+            if not x:
+                return
+            # 1) 原字符串
+            yield x
+            # 2) basename/stem
+            base = os.path.basename(x)
+            if base and base != x:
+                yield base
+            stem, _ext = os.path.splitext(base)
+            if stem and stem != base:
+                yield stem
+            # 3) 规范化 utterance_id（若包含）
+            canon = self._canonical_utt_id(x)
+            if canon:
+                yield canon
+
+        # A) 先尝试 sentence[idx] / vid / vid[idx] 里如果直接包含 utterance_id
+        try:
+            if hasattr(sample, "sentence") and sample.sentence is not None and len(sample.sentence) > idx:
+                for k in _yield_keys_from_string(sample.sentence[idx]):
+                    feat = _try_key(k)
+                    if feat is not None:
+                        return feat
+        except Exception:
+            pass
+
+        dialog_id = None
+        try:
+            if hasattr(sample, "vid"):
+                v = sample.vid
+                if isinstance(v, (list, tuple)) and len(v) > idx:
+                    dialog_id = v[idx]
+                elif isinstance(v, str):
+                    dialog_id = v
+        except Exception:
+            dialog_id = None
+
+        if dialog_id is not None:
+            for k in _yield_keys_from_string(dialog_id):
+                # 有些数据里 vid 直接就是 utterance_id
+                feat = _try_key(k)
+                if feat is not None:
+                    return feat
+
+        # B) 主路径：dialog_id + speaker + index
+        spk = None
+        speakers = None
+        try:
+            if hasattr(sample, "speaker"):
+                speakers = sample.speaker
+                if speakers is not None and len(speakers) > idx:
+                    s0 = speakers[idx]
+                    if isinstance(s0, (list, tuple)) and len(s0) > 0:
+                        s0 = s0[0]
+                    if isinstance(s0, str) and s0.strip():
+                        spk = s0.strip()[0].upper()
+        except Exception:
+            spk = None
+
+        if isinstance(dialog_id, str) and dialog_id.strip():
+            did = dialog_id.strip()
+            # 同时尝试 turn_idx 和 speaker_idx（以及 +1 的变体，规避不同实现的 off-by-one）
+            idx_turn0 = idx
+            idx_turn1 = idx + 1
+
+            spk_candidates = []
+            if spk in ("F", "M"):
+                spk_candidates = [spk]
+            else:
+                # speaker 缺失时，保守尝试两种（宁可多查几次，也要把命中率拉满）
+                spk_candidates = ["F", "M"]
+
+            for sp in spk_candidates:
+                idx_sp0 = self._speaker_count_index(speakers, idx, sp)
+                idx_sp1 = (idx_sp0 + 1) if idx_sp0 is not None else None
+
+                candidate_numbers = []
+                candidate_numbers.append(("turn", idx_turn0))
+                candidate_numbers.append(("turn", idx_turn1))
+                if idx_sp0 is not None:
+                    candidate_numbers.append(("spk", idx_sp0))
+                if idx_sp1 is not None:
+                    candidate_numbers.append(("spk", idx_sp1))
+
+                for _kind, num in candidate_numbers:
+                    k = f"{did}_{sp}{int(num):03d}"
+                    feat = _try_key(k)
+                    if feat is not None:
+                        return feat
+
+        return None
     
     def reset_rppg_stats(self):
         """重置rPPG统计信息（每个epoch开始时调用）"""
