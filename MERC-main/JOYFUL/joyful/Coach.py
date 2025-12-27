@@ -8,7 +8,7 @@ from tqdm import tqdm
 from sklearn import metrics
 
 import joyful
-from joyful.loss_utils import LossWeightConfig
+from .loss_utils import LossWeightConfig
 
 log = joyful.utils.get_logger()
 
