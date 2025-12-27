@@ -364,7 +364,9 @@ def main():
                 # 这里用 target_frames 作为“等间隔采样点数”的 fs 近似（用于FFT频率轴归一化）
                 rppg = _fft_bandpass(rppg, fs=float(args.target_frames), low=args.band_low, high=args.band_high)
                 feat = _psd_feature(rppg, fs=float(args.target_frames), low=args.band_low, high=args.band_high, dim=args.feature_dim)
-                feature_map[seg.utt_id] = feat
+                # 重要：为了跨环境/跨numpy版本可加载，这里存成纯Python list（而不是 np.ndarray）
+                # 否则不同numpy大版本（如 1.x vs 2.x）可能出现 pickle 反序列化 ImportError（例如 numpy._core）。
+                feature_map[seg.utt_id] = feat.tolist()
             except Exception:
                 continue
 
