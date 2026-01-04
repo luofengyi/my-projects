@@ -67,7 +67,9 @@ class Coach:
             'train_f1s': [],
             'dev_f1s': [],
             'test_f1s': [],
-            'class_f1s': {}  # 每个类别的F1分数
+            'class_f1s': {},  # 每个类别的F1分数
+            'test_preds': None,  # 最后一次测试集预测标签
+            'test_golds': None   # 最后一次测试集真实标签（可选）
         }
         # ULGM权重调度参数
         self.unimodal_init_weight = getattr(args, 'unimodal_init_weight', 0.0)
@@ -95,9 +97,9 @@ class Coach:
         # Train
         for epoch in range(1, self.args.epochs + 1):
             train_loss, train_f1 = self.train_epoch(epoch)
-            dev_f1, dev_loss, dev_class_f1s = self.evaluate()
+            dev_f1, dev_loss, dev_class_f1s, _, _ = self.evaluate()
             self.scheduler.step(dev_loss)
-            test_f1, test_loss, test_class_f1s = self.evaluate(test=True)
+            test_f1, test_loss, test_class_f1s, test_preds, test_golds = self.evaluate(test=True)
             if self.args.dataset == "mosei" and self.args.emotion == "multilabel":
                 test_f1 = np.array(list(test_f1.values())).mean()
             log.info("[Dev set] [f1 {:.4f}]".format(dev_f1))
@@ -115,6 +117,12 @@ class Coach:
                     if class_name not in self.training_history['class_f1s']:
                         self.training_history['class_f1s'][class_name] = []
                     self.training_history['class_f1s'][class_name].append(f1_score)
+
+            # 记录最后一轮的测试集预测/真实标签（用于绘制混淆矩阵）
+            if test_preds is not None and test_golds is not None:
+                # 每轮覆盖，循环结束后保持最后一轮
+                self.training_history['test_preds'] = [int(x) for x in test_preds]
+                self.training_history['test_golds'] = [int(x) for x in test_golds]
 
             if best_dev_f1 is None or dev_f1 > best_dev_f1:
                 best_dev_f1 = dev_f1
@@ -301,6 +309,16 @@ class Coach:
                 for k, v in self.training_history['class_f1s'].items()
             }
         }
+
+        # 可选：保存最后一次测试集的预测/真实标签，方便绘制混淆矩阵
+        if self.training_history.get('test_preds') is not None:
+            history_to_save['test_preds'] = [
+                int(x) for x in self.training_history['test_preds']
+            ]
+        if self.training_history.get('test_golds') is not None:
+            history_to_save['test_golds'] = [
+                int(x) for x in self.training_history['test_golds']
+            ]
         
         with open(history_file, 'w') as f:
             json.dump(history_to_save, f, indent=2)
@@ -394,4 +412,4 @@ class Coach:
                         )
                         class_f1s[label_name] = class_f1
         
-        return f1, dev_loss, class_f1s
+        return f1, dev_loss, class_f1s, preds, golds
