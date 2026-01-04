@@ -10,6 +10,7 @@
 """
 
 import argparse
+import json
 import os
 import pickle
 
@@ -68,7 +69,7 @@ def main():
         "--checkpoint",
         type=str,
         default="./model_checkpoints/iemocap_4_best_dev_f1_model_atv.pt",
-        help="训练好的模型 checkpoint 路径。",
+        help="训练好的模型 checkpoint 路径（若不提供 --history_json，将用该模型重新推理得到预测标签）。",
     )
     parser.add_argument(
         "--device",
@@ -100,6 +101,18 @@ def main():
         help="可选：保存混淆矩阵原始计数到 CSV。",
     )
     parser.add_argument(
+        "--history_json",
+        type=str,
+        default=None,
+        help="可选：训练保存的 history JSON（如 training_history/iemocap_4_atv_history.json）。若包含预测标签，可直接用于绘制，无需推理。",
+    )
+    parser.add_argument(
+        "--pred_key",
+        type=str,
+        default=None,
+        help="history JSON 中预测标签的键名（如 test_preds/preds/pred_labels）。为空则自动尝试常见键。",
+    )
+    parser.add_argument(
         "--cmap",
         type=str,
         default="Blues",
@@ -107,41 +120,76 @@ def main():
     )
     args = parser.parse_args()
 
-    # 加载数据与模型
-    data = load_pkl(args.data)
-    ckpt = torch.load(args.checkpoint, map_location=args.device)
-    stored_args = ckpt["args"]
-
-    # 覆盖运行时配置
-    stored_args.device = args.device
-    stored_args.batch_size = args.batch_size
-
-    model = ckpt["modelN_state_dict"]
-    modelF = ckpt["modelF_state_dict"]
-
-    # 构建测试集
-    testset = joyful.Dataset(data["test"], modelF, False, stored_args)
-
-    model.eval()
-    modelF.eval()
-
-    golds = []
-    preds = []
-    with torch.no_grad():
-        for idx in tqdm(range(len(testset)), desc="test"):
-            batch = testset[idx]
-            golds.append(batch["label_tensor"])
-            for k, v in batch.items():
-                if k != "utterance_texts":
-                    batch[k] = v.to(stored_args.device)
-            y_hat = model(batch, False)
-            preds.append(y_hat.detach().to("cpu"))
-
-    golds = torch.cat(golds, dim=-1).cpu().numpy()
-    preds = torch.cat(preds, dim=-1).cpu().numpy()
-
-    # 生成混淆矩阵（标签顺序：Happy, Sad, Neutral, Angry）
     class_names = ["Happy", "Sad", "Neutral", "Angry"]
+
+    def load_golds_from_data(data_path: str):
+        data_obj = load_pkl(data_path)
+        test_split = data_obj.get("test", [])
+        gold_list = []
+        for sample in test_split:
+            try:
+                gold_list.extend(list(sample.label))
+            except Exception:
+                continue
+        return np.array(gold_list, dtype=np.int64)
+
+    def load_preds_from_history(hist_path: str, pred_key: str | None):
+        with open(hist_path, "r", encoding="utf-8") as f:
+            hist = json.load(f)
+        keys_to_try = [pred_key] if pred_key else []
+        keys_to_try += ["test_preds", "preds", "pred_labels", "y_pred", "yhat"]
+        for k in keys_to_try:
+            if k and k in hist:
+                preds_arr = np.array(hist[k], dtype=np.int64)
+                golds_arr = None
+                if "test_golds" in hist:
+                    golds_arr = np.array(hist["test_golds"], dtype=np.int64)
+                return preds_arr, golds_arr
+        return None, None
+
+    golds = None
+    preds = None
+
+    # 方案 A：使用 history JSON 中的预测标签
+    if args.history_json:
+        preds, golds_hist = load_preds_from_history(args.history_json, args.pred_key)
+        if preds is None:
+            print(f"warning: {args.history_json} 未找到预测标签字段，改用模型推理获得预测。")
+            golds = None  # 重新用推理路径获取 golds，以保持一致
+        else:
+            golds = golds_hist if golds_hist is not None else load_golds_from_data(args.data)
+
+    # 方案 B：用模型重新推理得到预测标签
+    if preds is None or golds is None:
+        data = load_pkl(args.data)
+        ckpt = torch.load(args.checkpoint, map_location=args.device)
+        stored_args = ckpt["args"]
+        stored_args.device = args.device
+        stored_args.batch_size = args.batch_size
+        model = ckpt["modelN_state_dict"]
+        modelF = ckpt["modelF_state_dict"]
+        testset = joyful.Dataset(data["test"], modelF, False, stored_args)
+        model.eval()
+        modelF.eval()
+
+        golds_list = []
+        preds_list = []
+        with torch.no_grad():
+            for idx in tqdm(range(len(testset)), desc="test"):
+                batch = testset[idx]
+                golds_list.append(batch["label_tensor"])
+                for k, v in batch.items():
+                    if k != "utterance_texts":
+                        batch[k] = v.to(stored_args.device)
+                y_hat = model(batch, False)
+                preds_list.append(y_hat.detach().to("cpu"))
+
+        golds = torch.cat(golds_list, dim=-1).cpu().numpy()
+        preds = torch.cat(preds_list, dim=-1).cpu().numpy()
+
+    if len(golds) != len(preds):
+        raise ValueError(f"标签数量不一致: golds={len(golds)}, preds={len(preds)}")
+
     cm = confusion_matrix(golds, preds, labels=range(len(class_names)))
 
     print("Confusion Matrix (rows=true, cols=pred):")
