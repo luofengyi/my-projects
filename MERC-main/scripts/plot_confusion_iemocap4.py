@@ -14,11 +14,22 @@ import json
 import os
 import pickle
 import sys
+import importlib
 from typing import Optional
 
-# 添加上级目录到Python路径
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, parent_dir)
+# 添加上级目录与 JOYFUL 包路径，兼容 pickle 中的模块引用（'joyful'）
+repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+joyful_pkg_dir = os.path.join(repo_root, "JOYFUL")
+for p in [repo_root, joyful_pkg_dir]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+# 兼容：pickle 里引用模块名 'joyful'，这里预先加载并别名
+try:
+    joyful_pkg = importlib.import_module("JOYFUL.joyful")
+    sys.modules["joyful"] = joyful_pkg
+except Exception:
+    pass
 
 import matplotlib.pyplot as plt
 import numpy as np
