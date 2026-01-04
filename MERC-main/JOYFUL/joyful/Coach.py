@@ -56,6 +56,7 @@ class Coach:
         self.best_dev_f1 = None
         self.best_epoch = None
         self.best_state = None
+        self.best_train_f1 = None  # 记录训练集最高F1
         
         # 使用基础优化方案的损失权重配置
         self.loss_weight_config = LossWeightConfig.from_args(args)
@@ -69,7 +70,11 @@ class Coach:
             'test_f1s': [],
             'class_f1s': {},  # 每个类别的F1分数
             'test_preds': None,  # 最后一次测试集预测标签
-            'test_golds': None   # 最后一次测试集真实标签（可选）
+            'test_golds': None,  # 最后一次测试集真实标签（可选）
+            'best_train_preds': None,  # 训练集最佳F1对应的预测
+            'best_train_golds': None,  # 训练集最佳F1对应的真实标签
+            'best_train_epoch': None,  # 训练集最佳F1所在epoch
+            'best_train_f1': None,     # 训练集最佳F1
         }
         # ULGM权重调度参数
         self.unimodal_init_weight = getattr(args, 'unimodal_init_weight', 0.0)
@@ -96,7 +101,7 @@ class Coach:
 
         # Train
         for epoch in range(1, self.args.epochs + 1):
-            train_loss, train_f1 = self.train_epoch(epoch)
+            train_loss, train_f1, train_preds, train_golds = self.train_epoch(epoch)
             dev_f1, dev_loss, dev_class_f1s, _, _ = self.evaluate()
             self.scheduler.step(dev_loss)
             test_f1, test_loss, test_class_f1s, test_preds, test_golds = self.evaluate(test=True)
@@ -123,6 +128,15 @@ class Coach:
                 # 每轮覆盖，循环结束后保持最后一轮
                 self.training_history['test_preds'] = [int(x) for x in test_preds]
                 self.training_history['test_golds'] = [int(x) for x in test_golds]
+
+            # 若当前训练F1达到新高，记录对应的训练集预测/真实标签
+            if self.best_train_f1 is None or (isinstance(train_f1, (int, float)) and train_f1 > self.best_train_f1):
+                self.best_train_f1 = train_f1
+                self.training_history['best_train_f1'] = float(train_f1)
+                self.training_history['best_train_epoch'] = epoch
+                if train_preds is not None and train_golds is not None:
+                    self.training_history['best_train_preds'] = [int(x) for x in train_preds]
+                    self.training_history['best_train_golds'] = [int(x) for x in train_golds]
 
             if best_dev_f1 is None or dev_f1 > best_dev_f1:
                 best_dev_f1 = dev_f1
@@ -214,8 +228,8 @@ class Coach:
             
             self.opt1.step()
 
-        # 计算训练集F1分数
-        train_f1 = self.evaluate_train_set()
+        # 计算训练集F1分数，并返回该轮训练集的预测/真实标签
+        train_f1, train_preds, train_golds = self.evaluate_train_set(return_preds=True)
 
         end_time = time.time()
         
@@ -239,7 +253,7 @@ class Coach:
             "[Epoch %d] [Loss: %f] [Train F1: %f] [Time: %f]"
             % (epoch, epoch_loss, train_f1, end_time - start_time)
         )
-        return epoch_loss, train_f1
+        return epoch_loss, train_f1, train_preds, train_golds
     
     def _compute_unimodal_weight(self, epoch):
         """
@@ -253,8 +267,8 @@ class Coach:
         progress = min(1.0, progress_epoch / self.unimodal_warmup_epochs)
         return self.unimodal_init_weight + (self.unimodal_target_weight - self.unimodal_init_weight) * progress
     
-    def evaluate_train_set(self):
-        """评估训练集，计算F1分数"""
+    def evaluate_train_set(self, return_preds: bool = False):
+        """评估训练集，计算F1分数。可选返回预测与真实标签。"""
         self.model.eval()
         self.modelF.eval()
         with torch.no_grad():
@@ -280,6 +294,8 @@ class Coach:
         
         self.model.train()
         self.modelF.train()
+        if return_preds:
+            return f1, preds, golds
         return f1
     
     def save_training_history(self):
@@ -319,6 +335,20 @@ class Coach:
             history_to_save['test_golds'] = [
                 int(x) for x in self.training_history['test_golds']
             ]
+
+        # 可选：保存训练集最佳F1对应的预测/真实标签
+        if self.training_history.get('best_train_preds') is not None:
+            history_to_save['best_train_preds'] = [
+                int(x) for x in self.training_history['best_train_preds']
+            ]
+        if self.training_history.get('best_train_golds') is not None:
+            history_to_save['best_train_golds'] = [
+                int(x) for x in self.training_history['best_train_golds']
+            ]
+        if self.training_history.get('best_train_epoch') is not None:
+            history_to_save['best_train_epoch'] = int(self.training_history['best_train_epoch'])
+        if self.training_history.get('best_train_f1') is not None:
+            history_to_save['best_train_f1'] = float(self.training_history['best_train_f1'])
         
         with open(history_file, 'w') as f:
             json.dump(history_to_save, f, indent=2)
