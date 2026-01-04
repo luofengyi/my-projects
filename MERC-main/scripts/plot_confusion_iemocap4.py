@@ -14,7 +14,7 @@ import json
 import os
 import pickle
 import sys
-import os
+from typing import Optional
 
 # 添加上级目录到Python路径
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -139,7 +139,7 @@ def main():
                 continue
         return np.array(gold_list, dtype=np.int64)
 
-    def load_preds_from_history(hist_path: str, pred_key: str | None):
+    def load_preds_from_history(hist_path: str, pred_key:  Optional[str]):
         with open(hist_path, "r", encoding="utf-8") as f:
             hist = json.load(f)
         keys_to_try = [pred_key] if pred_key else []
