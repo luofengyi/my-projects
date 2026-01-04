@@ -13,6 +13,12 @@ import argparse
 import json
 import os
 import pickle
+import sys
+import os
+
+# 添加上级目录到Python路径
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,7 +27,7 @@ import torch
 from sklearn.metrics import confusion_matrix
 from tqdm import tqdm
 
-import joyful
+from JOYFUL import joyful
 
 
 def load_pkl(file_path: str):
