@@ -357,7 +357,7 @@ class Dataset:
                             else:
                                 output, loss = result
                     else:
-                        result = self.modelF(a, t, v, rppg=rppg_feat)
+                        result = self.modelF(a, t, v)
                         # 为了兼容性，如果forward返回3个值，只取前2个
                         if isinstance(result, tuple) and len(result) == 3:
                             output, loss = result[0], result[1]
