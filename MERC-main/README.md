@@ -73,7 +73,30 @@ python eval.py --dataset="iemocap_4" --modalities="atv"
 python eval.py --dataset="iemocap_4" --modalities="t"
 ```
 
+python train.py \
+    --dataset="iemocap_4" \
+    --modalities="atv" \
+    --use_hierarchical_fusion \
+    --encoder_loss_weight=0.03 \
+    --use_smooth_l1 \
+    --from_begin \
+    --ulgm_text_only \
+    --epochs=50
 
+python train.py \
+    --dataset="iemocap_4" \
+    --modalities="atv" \
+    --use_hierarchical_fusion \
+    --from_begin \
+    --epochs=50
+
+python train.py \
+    --dataset="iemocap_4" \
+    --modalities="atv" \
+    --use_hierarchical_fusion \
+    --encoder_loss_weight=0.03 \
+    --from_begin \
+    --epochs=50
 
 
 
