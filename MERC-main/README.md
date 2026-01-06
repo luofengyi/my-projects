@@ -93,13 +93,23 @@ python train.py \
 python train.py \
     --dataset="iemocap_4" \
     --modalities="atv" \
-    --use_hierarchical_fusion \
-    --encoder_loss_weight=0.03 \
+    --use_hierarchical_fusion --encoder_loss_weight=0.03 \
     --from_begin \
     --epochs=50
 
+python train.py \
+    --dataset="iemocap_4" \
+    --modalities="atv" \
+    --use_hierarchical_fusion --encoder_loss_weight=0.03 --use_smooth_l1 \
+    --from_begin \
+    --epochs=50
 
-
+<!-- 可以在项目根目录执行示例命令（含ULGM、自动类别权重、小学习率、开启梯度裁剪）： -->
+cd MERC-mainpython JOYFUL/train.py \  --dataset iemocap_4 \  --use_ulgm \  --auto_class_weight \  --learning_rate 1e-5 \  --max_grad_norm 1.0 \  --max_grad_value -1 \  --unimodal_init_weight 0.0005 \  --unimodal_warmup_epochs 8 \  --unimodal_delay_epochs 3 \  --ulgm_happy_min_samples 10 \  --ulgm_happy_true_label_weight 0.7 \  --happy_early_boost 1.5
+<!-- --use_ulgm 启用单模态伪标签监督模块。
+--auto_class_weight 自动计算类别权重。
+--learning_rate 1e-5 使用较小学习率。
+--max_grad_norm 1.0（可改更小）开启梯度裁剪，--max_grad_value -1 表示仅按范数裁剪。 -->
 
 
 
