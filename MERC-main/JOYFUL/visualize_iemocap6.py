@@ -3,6 +3,8 @@
 - 读取 training_history/iemocap_atv_history.json
 - 统计每类 F1 的最高值并打印
 - 绘制各类 F1 随 epoch 变化曲线
+- 绘制训练 F1 随 epoch 变化曲线
+- 绘制训练 loss 随 epoch 变化曲线
 - 基于 test_preds / test_golds 绘制混淆矩阵
 
 输出目录默认：iemocap6_outputs （不含 "plots" 字样）
@@ -38,6 +40,40 @@ def summarize_best_class_f1(epochs: List[int], class_f1s: Dict[str, List[float]]
         best_idx = int(np.argmax(scores))
         best_info.append((cname, epochs[best_idx], scores[best_idx]))
     return best_info
+
+
+def plot_loss_curve(epochs: List[int], train_losses: List[float], output_path: str):
+    if not train_losses:
+        print("[warn] train_losses empty; skip loss curve.")
+        return
+    plt.figure(figsize=(8, 5))
+    plt.plot(epochs, train_losses, "b-", linewidth=2, marker="o", markersize=4, label="Train Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title("Training Loss Curve (6-class)")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"[saved] loss curve -> {output_path}")
+
+
+def plot_train_f1_curve(epochs: List[int], train_f1s: List[float], output_path: str):
+    if not train_f1s:
+        print("[warn] train_f1s empty; skip train F1 curve.")
+        return
+    plt.figure(figsize=(8, 5))
+    plt.plot(epochs, train_f1s, "g-", linewidth=2, marker="s", markersize=4, label="Train F1")
+    plt.xlabel("Epoch")
+    plt.ylabel("F1 Score")
+    plt.title("Training F1 Curve (6-class)")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"[saved] train F1 curve -> {output_path}")
 
 
 def plot_class_f1_curves(epochs: List[int], class_f1s: Dict[str, List[float]], class_order: List[str], output_path: str):
@@ -139,6 +175,8 @@ def main():
     history = load_history(args.history_file)
     epochs = history.get("epochs", [])
     class_f1s = history.get("class_f1s", {})
+    train_f1s = history.get("train_f1s", [])
+    train_losses = history.get("train_losses", [])
     test_preds = history.get("test_preds", [])
     test_golds = history.get("test_golds", [])
 
@@ -147,6 +185,14 @@ def main():
     labels = list(label_id_map.values())
 
     os.makedirs(args.output_dir, exist_ok=True)
+
+    # 绘制训练 Loss
+    loss_curve_path = os.path.join(args.output_dir, "iemocap6_loss_curve.png")
+    plot_loss_curve(epochs, train_losses, loss_curve_path)
+
+    # 绘制训练 F1
+    train_f1_curve_path = os.path.join(args.output_dir, "iemocap6_train_f1_curve.png")
+    plot_train_f1_curve(epochs, train_f1s, train_f1_curve_path)
 
     # 统计每类最高 F1
     best_info = summarize_best_class_f1(epochs, class_f1s, class_order)
