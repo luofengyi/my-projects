@@ -221,18 +221,28 @@ def main():
                        help='Dataset name')
     parser.add_argument('--modalities', type=str, default='atv',
                        help='Modalities used')
+    parser.add_argument('--label_set', type=str, default=None,
+                       choices=['iemocap4', 'iemocap6'],
+                       help='可选：指定 IEMOCAP 标签集合（4/6 类）；若提供将覆盖 dataset')
     # output_dir 设置为 None，便于在 4 类 / 6 类时给出不同默认目录，避免结果混在一起
     parser.add_argument('--output_dir', type=str, default=None,
                        help='Output directory for plots; default splits 4/6-class')
     
     args = parser.parse_args()
     
+    # 根据 label_set / dataset 判定最终数据集名与默认 history 路径
+    if args.label_set:
+        dataset_name = 'iemocap' if args.label_set == 'iemocap6' else 'iemocap_4'
+    else:
+        dataset_name = args.dataset
+
     # 确定历史文件路径
     if args.history_file is None:
-        history_file = os.path.join(
-            'training_history',
-            f"{args.dataset}_{args.modalities}_history.json"
-        )
+        if dataset_name in ('iemocap', 'iemocap_4'):
+            base = 'iemocap' if dataset_name == 'iemocap' else 'iemocap_4'
+            history_file = os.path.join('training_history', f"{base}_{args.modalities}_history.json")
+        else:
+            history_file = os.path.join('training_history', f"{dataset_name}_{args.modalities}_history.json")
     else:
         history_file = args.history_file
     
@@ -252,8 +262,8 @@ def main():
         'iemocap_4': 'training_plots_4cls'
     }
     output_dir = args.output_dir or default_output_dir_map.get(
-        args.dataset,
-        f"training_plots_{args.dataset}"
+        dataset_name,
+        f"training_plots_{dataset_name}"
     )
     os.makedirs(output_dir, exist_ok=True)
     
@@ -261,21 +271,22 @@ def main():
     print("\nGenerating visualization charts...")
     
     # 图表1：损失曲线
-    loss_path = os.path.join(output_dir, f"{args.dataset}_{args.modalities}_loss_curve.png")
+    loss_path = os.path.join(output_dir, f"{dataset_name}_{args.modalities}_loss_curve.png")
     plot_loss_curve(history, loss_path)
     
     # 图表2：F1曲线
-    f1_path = os.path.join(output_dir, f"{args.dataset}_{args.modalities}_f1_curves.png")
+    f1_path = os.path.join(output_dir, f"{dataset_name}_{args.modalities}_f1_curves.png")
     plot_f1_curves(history, f1_path)
     
     # 图表3：各类别F1曲线
-    class_f1_path = os.path.join(output_dir, f"{args.dataset}_{args.modalities}_class_f1_curves.png")
-    plot_class_f1_curves(history, class_f1_path, dataset=args.dataset)
+    class_f1_path = os.path.join(output_dir, f"{dataset_name}_{args.modalities}_class_f1_curves.png")
+    plot_class_f1_curves(history, class_f1_path, dataset=dataset_name)
     
     print(f"\n✅ All charts saved to: {output_dir}")
     print(f"   - Chart 1 (Loss): {loss_path}")
     print(f"   - Chart 2 (F1 Scores): {f1_path}")
     print(f"   - Chart 3 (Class F1): {class_f1_path}")
+    print(f"Dataset: {dataset_name} (label_set: {args.label_set or 'auto-from-dataset'})")
 
 
 if __name__ == "__main__":
