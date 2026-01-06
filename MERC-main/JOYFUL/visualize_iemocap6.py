@@ -176,6 +176,8 @@ def main():
     epochs = history.get("epochs", [])
     class_f1s = history.get("class_f1s", {})
     train_f1s = history.get("train_f1s", [])
+    dev_f1s = history.get("dev_f1s", [])
+    test_f1s = history.get("test_f1s", [])
     train_losses = history.get("train_losses", [])
     test_preds = history.get("test_preds", [])
     test_golds = history.get("test_golds", [])
@@ -200,6 +202,16 @@ def main():
         print(f"[stat] Train F1 max: {train_f1s[best_train_f1_idx]:.4f} @ epoch {epochs[best_train_f1_idx]}")
     else:
         print("[stat] Train F1 max: n/a (no data)")
+    if dev_f1s:
+        best_dev_f1_idx = int(np.argmax(dev_f1s))
+        print(f"[stat] Dev F1 max:   {dev_f1s[best_dev_f1_idx]:.4f} @ epoch {epochs[best_dev_f1_idx]}")
+    else:
+        print("[stat] Dev F1 max:   n/a (no data)")
+    if test_f1s:
+        best_test_f1_idx = int(np.argmax(test_f1s))
+        print(f"[stat] Test F1 max:  {test_f1s[best_test_f1_idx]:.4f} @ epoch {epochs[best_test_f1_idx]}")
+    else:
+        print("[stat] Test F1 max:  n/a (no data)")
     if train_losses:
         best_train_loss_idx = int(np.argmin(train_losses))
         print(f"[stat] Train Loss min: {train_losses[best_train_loss_idx]:.6f} @ epoch {epochs[best_train_loss_idx]}")
