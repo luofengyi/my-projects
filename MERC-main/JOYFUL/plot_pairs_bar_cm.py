@@ -51,10 +51,14 @@ def plot_bar_and_cm(df: pd.DataFrame,
 
     # confusion matrix
     cm = confusion_matrix(df["true"], df["pred"], labels=sorted(id2label.keys()))
-    cm_show = cm.astype(float)
     if normalize_cm:
+        cm_show = cm.astype(float)
         row_sum = cm_show.sum(axis=1, keepdims=True)
         cm_show = np.divide(cm_show, row_sum, out=np.zeros_like(cm_show), where=row_sum != 0)
+        annot_fmt = ".2f"
+    else:
+        cm_show = cm
+        annot_fmt = "d"
 
     fig = plt.figure(figsize=(14, 6))
 
@@ -75,7 +79,7 @@ def plot_bar_and_cm(df: pd.DataFrame,
     sns.heatmap(
         cm_show,
         annot=True,
-        fmt=".2f" if normalize_cm else "d",
+        fmt=annot_fmt,
         cmap="Blues",
         xticklabels=labels,
         yticklabels=labels,
