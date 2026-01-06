@@ -71,6 +71,11 @@ def plot_f1_curves(history, save_path):
     dev_f1s = history['dev_f1s']
     test_f1s = history['test_f1s']
     
+    # 训练F1最高点
+    best_train_idx = np.argmax(train_f1s)
+    best_train_epoch = epochs[best_train_idx]
+    best_train_f1 = train_f1s[best_train_idx]
+    
     # 找到最佳点（Dev F1最高，因为通常用Dev F1选择最佳模型）
     best_dev_idx = np.argmax(dev_f1s)
     best_dev_epoch = epochs[best_dev_idx]
@@ -86,6 +91,16 @@ def plot_f1_curves(history, save_path):
     plt.plot(epochs, train_f1s, 'b-', linewidth=2, label='Train F1', marker='o', markersize=4)
     plt.plot(epochs, dev_f1s, 'g-', linewidth=2, label='Dev F1', marker='s', markersize=4)
     plt.plot(epochs, test_f1s, 'r-', linewidth=2, label='Test F1', marker='^', markersize=4)
+    
+    # 标注最佳Train F1点
+    plt.plot(best_train_epoch, best_train_f1, 'bo', markersize=10, zorder=5, label='Best Train F1')
+    plt.annotate(f'Best Train: Epoch {best_train_epoch}\nTrain F1: {best_train_f1:.4f}',
+                 xy=(best_train_epoch, best_train_f1),
+                 xytext=(10, -30),
+                 textcoords='offset points',
+                 fontsize=10,
+                 bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.7),
+                 arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0'))
     
     # 标注最佳Dev F1点（主要标注）
     plt.plot(best_dev_epoch, best_dev_f1, 'go', markersize=12, zorder=5, label='Best Dev F1')
@@ -116,7 +131,7 @@ def plot_f1_curves(history, save_path):
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"✓ Chart 2 saved: {save_path} (Best Dev: Epoch {best_dev_epoch}, Dev F1: {best_dev_f1:.4f}, Test F1: {best_test_f1:.4f})")
+    print(f"✓ Chart 2 saved: {save_path} (Best Train: Epoch {best_train_epoch}, Train F1: {best_train_f1:.4f}; Best Dev: Epoch {best_dev_epoch}, Dev F1: {best_dev_f1:.4f}, Test F1: {best_test_f1:.4f})")
 
 
 def plot_class_f1_curves(history, save_path, dataset='iemocap_4'):
