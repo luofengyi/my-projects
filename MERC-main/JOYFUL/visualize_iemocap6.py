@@ -194,6 +194,18 @@ def main():
     train_f1_curve_path = os.path.join(args.output_dir, "iemocap6_train_f1_curve.png")
     plot_train_f1_curve(epochs, train_f1s, train_f1_curve_path)
 
+    # 训练整体指标统计
+    if train_f1s:
+        best_train_f1_idx = int(np.argmax(train_f1s))
+        print(f"[stat] Train F1 max: {train_f1s[best_train_f1_idx]:.4f} @ epoch {epochs[best_train_f1_idx]}")
+    else:
+        print("[stat] Train F1 max: n/a (no data)")
+    if train_losses:
+        best_train_loss_idx = int(np.argmin(train_losses))
+        print(f"[stat] Train Loss min: {train_losses[best_train_loss_idx]:.6f} @ epoch {epochs[best_train_loss_idx]}")
+    else:
+        print("[stat] Train Loss min: n/a (no data)")
+
     # 统计每类最高 F1
     best_info = summarize_best_class_f1(epochs, class_f1s, class_order)
     print("=== Best F1 per class (epoch, F1) ===")
