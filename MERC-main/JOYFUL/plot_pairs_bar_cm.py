@@ -7,7 +7,8 @@ Default mapping: {"hap":0,"sad":1,"neu":2,"ang":3}
 使用示例（仓库根目录）：
   python JOYFUL/plot_pairs_bar_cm.py \
     --pairs_csv ./plots/best_train_pairs.csv \
-    --out_png ./plots/best_train_pairs_vis.png \
+    --label_set iemocap4 \
+    --out_png ./plots_4cls/best_train_pairs_vis.png \
     --normalize_cm
 """
 
@@ -39,6 +40,29 @@ def load_pairs(pairs_csv: str) -> pd.DataFrame:
         df = df[list(cols)]
         df.columns = ["true", "pred"]
         return df
+
+
+def resolve_label_set(label_set: str) -> Dict[int, str]:
+    """
+    根据类别集合名称返回 id->label 映射。
+    - iemocap4: 4 类 (hap, sad, neu, ang)
+    - iemocap6: 6 类 (hap, sad, neu, ang, exc, fru)
+    """
+    if label_set == "iemocap6":
+        return {0: "hap", 1: "sad", 2: "neu", 3: "ang", 4: "exc", 5: "fru"}
+    return {0: "hap", 1: "sad", 2: "neu", 3: "ang"}
+
+
+def default_out_png(out_png: str, label_set: str) -> str:
+    """
+    当未显式指定 out_png 时，为 4 类 / 6 类提供不同默认输出目录，
+    以免结果混在一起。
+    """
+    if out_png:
+        return out_png
+    base_dir = "plots_6cls" if label_set == "iemocap6" else "plots_4cls"
+    os.makedirs(base_dir, exist_ok=True)
+    return os.path.join(base_dir, "pairs_bar_cm.png")
 
 
 def plot_bar_and_cm(df: pd.DataFrame,
@@ -106,15 +130,22 @@ def plot_bar_and_cm(df: pd.DataFrame,
 def main():
     parser = argparse.ArgumentParser(description="基于 true/pred 配对表绘制柱状分布与混淆矩阵")
     parser.add_argument("--pairs_csv", type=str, required=True, help="配对表 CSV 路径（含 true,pred 两列）")
-    parser.add_argument("--out_png", type=str, default=None, help="可选：输出图片路径")
+    parser.add_argument("--out_png", type=str, default=None, help="可选：输出图片路径；若不填将按 4/6 类分开默认目录")
+    parser.add_argument(
+        "--label_set",
+        type=str,
+        default="iemocap4",
+        choices=["iemocap4", "iemocap6"],
+        help="选择标签集合：iemocap4（4类）或 iemocap6（6类）",
+    )
     parser.add_argument("--normalize_cm", action="store_true", help="混淆矩阵按行归一化显示")
     args = parser.parse_args()
 
-    # 固定映射：{"hap":0,"sad":1,"neu":2,"ang":3}
-    id2label = {0: "hap", 1: "sad", 2: "neu", 3: "ang"}
+    id2label = resolve_label_set(args.label_set)
+    out_png = default_out_png(args.out_png, args.label_set)
 
     df = load_pairs(args.pairs_csv)
-    plot_bar_and_cm(df, id2label, args.normalize_cm, args.out_png)
+    plot_bar_and_cm(df, id2label, args.normalize_cm, out_png)
 
 
 if __name__ == "__main__":

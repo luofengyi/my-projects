@@ -124,7 +124,8 @@ def main():
     parser.add_argument("--history_file", type=str, default=None, help="Path to training history JSON")
     parser.add_argument("--dataset", type=str, default="iemocap_4", choices=["iemocap", "iemocap_4", "mosei", "meld"])
     parser.add_argument("--modalities", type=str, default="atv")
-    parser.add_argument("--output_dir", type=str, default="training_plots_simple")
+    # 4 类 / 6 类输出目录默认分开，避免覆盖
+    parser.add_argument("--output_dir", type=str, default=None)
     args = parser.parse_args()
 
     if args.history_file is None:
@@ -137,19 +138,27 @@ def main():
         return
 
     history = load_training_history(history_file)
-    os.makedirs(args.output_dir, exist_ok=True)
 
-    loss_path = os.path.join(args.output_dir, f"{args.dataset}_{args.modalities}_loss.png")
-    f1_path = os.path.join(args.output_dir, f"{args.dataset}_{args.modalities}_f1.png")
-    train_f1_only_path = os.path.join(args.output_dir, f"{args.dataset}_{args.modalities}_train_f1.png")
-    class_f1_path = os.path.join(args.output_dir, f"{args.dataset}_{args.modalities}_class_f1.png")
+    default_output_dir_map = {
+        "iemocap": "training_plots_simple_6cls",
+        "iemocap_4": "training_plots_simple_4cls",
+    }
+    output_dir = args.output_dir or default_output_dir_map.get(
+        args.dataset, f"training_plots_simple_{args.dataset}"
+    )
+    os.makedirs(output_dir, exist_ok=True)
+
+    loss_path = os.path.join(output_dir, f"{args.dataset}_{args.modalities}_loss.png")
+    f1_path = os.path.join(output_dir, f"{args.dataset}_{args.modalities}_f1.png")
+    train_f1_only_path = os.path.join(output_dir, f"{args.dataset}_{args.modalities}_train_f1.png")
+    class_f1_path = os.path.join(output_dir, f"{args.dataset}_{args.modalities}_class_f1.png")
 
     plot_loss_curve(history, loss_path)
     plot_f1_curves(history, f1_path)
     plot_train_f1_only(history, train_f1_only_path)
     plot_class_f1_curves(history, class_f1_path, dataset=args.dataset)
 
-    print("[done] all plots saved to:", args.output_dir)
+    print("[done] all plots saved to:", output_dir)
 
 
 if __name__ == "__main__":
