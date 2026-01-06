@@ -124,24 +124,11 @@ def main():
     parser.add_argument("--history_file", type=str, default=None, help="Path to training history JSON")
     parser.add_argument("--dataset", type=str, default="iemocap_4", choices=["iemocap", "iemocap_4", "mosei", "meld"])
     parser.add_argument("--modalities", type=str, default="atv")
-    parser.add_argument("--label_set", type=str, default=None,
-                        choices=["iemocap4", "iemocap6"],
-                        help="可选：指定 IEMOCAP 标签集合（4/6 类）；若提供将覆盖 dataset")
-    # 4 类 / 6 类输出目录默认分开，避免覆盖
-    parser.add_argument("--output_dir", type=str, default=None)
+    parser.add_argument("--output_dir", type=str, default="training_plots_simple")
     args = parser.parse_args()
 
-    if args.label_set:
-        dataset_name = "iemocap" if args.label_set == "iemocap6" else "iemocap_4"
-    else:
-        dataset_name = args.dataset
-
     if args.history_file is None:
-        if dataset_name in ("iemocap", "iemocap_4"):
-            base = "iemocap" if dataset_name == "iemocap" else "iemocap_4"
-            history_file = os.path.join("training_history", f"{base}_{args.modalities}_history.json")
-        else:
-            history_file = os.path.join("training_history", f"{dataset_name}_{args.modalities}_history.json")
+        history_file = os.path.join("training_history", f"{args.dataset}_{args.modalities}_history.json")
     else:
         history_file = args.history_file
 
@@ -150,28 +137,19 @@ def main():
         return
 
     history = load_training_history(history_file)
+    os.makedirs(args.output_dir, exist_ok=True)
 
-    default_output_dir_map = {
-        "iemocap": "training_plots_simple_6cls",
-        "iemocap_4": "training_plots_simple_4cls",
-    }
-    output_dir = args.output_dir or default_output_dir_map.get(
-        dataset_name, f"training_plots_simple_{dataset_name}"
-    )
-    os.makedirs(output_dir, exist_ok=True)
-
-    loss_path = os.path.join(output_dir, f"{dataset_name}_{args.modalities}_loss.png")
-    f1_path = os.path.join(output_dir, f"{dataset_name}_{args.modalities}_f1.png")
-    train_f1_only_path = os.path.join(output_dir, f"{dataset_name}_{args.modalities}_train_f1.png")
-    class_f1_path = os.path.join(output_dir, f"{dataset_name}_{args.modalities}_class_f1.png")
+    loss_path = os.path.join(args.output_dir, f"{args.dataset}_{args.modalities}_loss.png")
+    f1_path = os.path.join(args.output_dir, f"{args.dataset}_{args.modalities}_f1.png")
+    train_f1_only_path = os.path.join(args.output_dir, f"{args.dataset}_{args.modalities}_train_f1.png")
+    class_f1_path = os.path.join(args.output_dir, f"{args.dataset}_{args.modalities}_class_f1.png")
 
     plot_loss_curve(history, loss_path)
     plot_f1_curves(history, f1_path)
     plot_train_f1_only(history, train_f1_only_path)
-    plot_class_f1_curves(history, class_f1_path, dataset=dataset_name)
+    plot_class_f1_curves(history, class_f1_path, dataset=args.dataset)
 
-    print("[done] all plots saved to:", output_dir)
-    print("dataset:", dataset_name, "| label_set:", args.label_set or "auto-from-dataset")
+    print("[done] all plots saved to:", args.output_dir)
 
 
 if __name__ == "__main__":
