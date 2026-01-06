@@ -1,8 +1,8 @@
 """
-读取 best_train_pairs.csv（或任意 true/pred 两列的配对表），输出：
-1) 真实值 vs 预测值的样本数对比柱状图
-2) 混淆矩阵热力图
-整体布局类似用户示例图，默认情感映射：{"hap":0,"sad":1,"neu":2,"ang":3}
+Read best_train_pairs.csv (or any CSV with true/pred columns) and output:
+1) Bar chart: true vs pred sample counts by class
+2) Confusion matrix heatmap
+Default mapping: {"hap":0,"sad":1,"neu":2,"ang":3}
 
 使用示例（仓库根目录）：
   python JOYFUL/plot_pairs_bar_cm.py \
@@ -22,12 +22,16 @@ import pandas as pd
 import seaborn as sns
 from sklearn.metrics import confusion_matrix
 
+# Ensure Latin font (to avoid missing CJK glyph warnings if environment lacks Chinese fonts)
+plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
+plt.rcParams["axes.unicode_minus"] = False
+
 
 def load_pairs(pairs_csv: str) -> pd.DataFrame:
     df = pd.read_csv(pairs_csv)
     if df.shape[1] < 2:
-        raise ValueError("CSV 至少需要两列，列名为 true,pred 或前两列即为真实/预测。")
-    # 兼容列名
+        raise ValueError("CSV must contain at least two columns: true, pred (or first two columns are true/pred).")
+    # compatible column names
     if "true" in df.columns and "pred" in df.columns:
         return df[["true", "pred"]]
     else:
@@ -45,7 +49,7 @@ def plot_bar_and_cm(df: pd.DataFrame,
     true_counts = df["true"].map(id2label).value_counts().reindex(labels, fill_value=0)
     pred_counts = df["pred"].map(id2label).value_counts().reindex(labels, fill_value=0)
 
-    # 混淆矩阵
+    # confusion matrix
     cm = confusion_matrix(df["true"], df["pred"], labels=sorted(id2label.keys()))
     cm_show = cm.astype(float)
     if normalize_cm:
@@ -54,19 +58,19 @@ def plot_bar_and_cm(df: pd.DataFrame,
 
     fig = plt.figure(figsize=(14, 6))
 
-    # 子图1：柱状图
+    # subplot 1: bar chart
     ax1 = plt.subplot(1, 2, 1)
     x = np.arange(len(labels))
     width = 0.35
-    ax1.bar(x - width/2, true_counts.values, width, label="真实值")
-    ax1.bar(x + width/2, pred_counts.values, width, label="预测值")
+    ax1.bar(x - width/2, true_counts.values, width, label="True")
+    ax1.bar(x + width/2, pred_counts.values, width, label="Pred")
     ax1.set_xticks(x)
     ax1.set_xticklabels(labels)
-    ax1.set_ylabel("样本数量")
-    ax1.set_title("真实值与预测值分布对比")
+    ax1.set_ylabel("Count")
+    ax1.set_title("True vs Pred Distribution")
     ax1.legend()
 
-    # 子图2：混淆矩阵
+    # subplot 2: confusion matrix
     ax2 = plt.subplot(1, 2, 2)
     sns.heatmap(
         cm_show,
@@ -81,9 +85,9 @@ def plot_bar_and_cm(df: pd.DataFrame,
         linecolor="white",
         ax=ax2,
     )
-    ax2.set_xlabel("预测标签")
-    ax2.set_ylabel("真实标签")
-    ax2.set_title("混淆矩阵")
+    ax2.set_xlabel("Predicted")
+    ax2.set_ylabel("True")
+    ax2.set_title("Confusion Matrix" + (" (normalized)" if normalize_cm else ""))
 
     plt.tight_layout()
     if out_png:
@@ -115,4 +119,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[Error] {e}")
         sys.exit(1)
+
 
