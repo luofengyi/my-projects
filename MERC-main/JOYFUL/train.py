@@ -511,6 +511,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Enable auto class weighting by default for 6-class IEMOCAP to mitigate collapse to the majority class.
+    if args.dataset == "iemocap" and (not args.class_weight) and (not args.auto_class_weight):
+        print("[info] Enabling --auto_class_weight for iemocap to handle class imbalance.")
+        args.auto_class_weight = True
+
     args.dataset_embedding_dims = {
         "iemocap": {
             "a": 50,
